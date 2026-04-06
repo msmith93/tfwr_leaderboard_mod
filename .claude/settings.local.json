@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(dotnet build:*)",
+      "Bash(bash build.sh)",
+      "Bash(/home/msmith/myprojects/claudedino/mod/build.sh)",
+      "Bash(steam steam://rungameid/2060160)",
+      "Bash(disown)",
+      "Read(/home/msmith/**)"
+    ]
+  }
+}
