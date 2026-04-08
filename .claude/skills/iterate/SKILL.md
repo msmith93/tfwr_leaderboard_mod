@@ -20,11 +20,12 @@ Run one full iteration cycle: diagnose (if needed), write a script, simulate, ca
 
 ## Step 0 (Conditional): Run Diagnostics
 
-**Run this step only when:**
+**Run this step when:**
 - The tracker has **no entries** for the target leaderboard (first iteration), OR
 - The previous iteration's notes flag **unexpectedly bad results** that suggest incorrect assumptions about game mechanics
+- There are details about the game that the documentation is not clear about that need to be tested in the game
 
-**Skip this step** if calibration data already exists at `iterations/calibration_<leaderboard>.json` and covers the needed constants, or if this is a subsequent iteration with no anomalies.
+**Skip this step** if no diagnostics are needed of if this is a subsequent iteration with no anomalies.
 
 ### What to diagnose
 
@@ -40,8 +41,8 @@ Examples of useful measurements:
 
 ### How to record findings
 
-- Save each diagnostic script as `iterations/diag_<leaderboard>_<what>.py`
-- Save all calibrated constants in `iterations/calibration_<leaderboard>.json`:
+- Save each diagnostic script as `diagnostics/diag_<leaderboard>_<what>.py`
+- Save all calibrated constants in `diagnostics/calibration_<leaderboard>.json`:
 
 ```json
 {
@@ -61,7 +62,7 @@ Examples of useful measurements:
 ## Step 1: Write a New Iteration Script
 
 1. Determine the next iteration number from `iterations/iteration_tracker.json`.
-2. If calibration data exists (`iterations/calibration_<leaderboard>.json`), read it and use the constants to inform your strategy.
+2. If calibration data exists (`diagnostics/calibration_<leaderboard>.json`), read it and use the constants to inform your strategy.
 3. Read notes from previous iterations to understand what has been tried and what to improve.
 4. Read the relevant game mechanics docs in `documentation/docs/unlocks/` for the target leaderboard.
 5. Write the algorithm script and save it as `iterations/iteration_<n>_<name>.py`.
