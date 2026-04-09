@@ -14,6 +14,7 @@ documentation/
     simulation.md       simulate() function reference
 iterations/             Iteration scripts, results, notes, and tracker
   iteration_tracker.json  Master tracker for all iterations
+diagnostics/            Diagnostic scripts and calibration data
 ```
 
 ## Game Interpreter Restrictions
@@ -116,8 +117,8 @@ run_time = simulate(filename, sim_unlocks, sim_items, sim_globals, seed, speedup
 | Algorithm script | `iterations/iteration_<n>_<name>.py` |
 | Results JSON | `iterations/iteration_<n>_results.json` |
 | Analysis notes | `iterations/iteration_<n>_notes.md` |
-| Diagnostic script | `iterations/diag_<leaderboard>_<what>.py` |
-| Calibration data | `iterations/calibration_<leaderboard>.json` |
+| Diagnostic script | `diagnostics/diag_<leaderboard>_<what>.py` |
+| Calibration data | `diagnostics/calibration_<leaderboard>.json` |
 | Master tracker | `iterations/iteration_tracker.json` |
 
 ### Results JSON schema

@@ -79,12 +79,15 @@ Examples of useful measurements:
 
 ## Step 2: Run Simulations
 
-Follow the two-file pattern from the invoke skill:
+Use the pre-approved helper (auto-approved via `python3:*`, no shell loop prompts):
 
-1. **Check game readiness**: `GET /status` must return `ready: true`.
-2. **Submit the algorithm script**: POST with `mode: "execute"` and the iteration filename. Poll until done. Check `output` for errors.
-3. **Submit the runner script**: POST a runner that calls `leaderboard_run()` on the algorithm script. Poll until done.
-4. **Capture the runner output**: Save the raw `output` text from the poll response.
+```bash
+python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000
+```
+
+This handles: status check → upload → sanity check → stop → leaderboard_run → poll → parse.
+
+Capture the full terminal output; it contains all `FINAL_TIME:` lines needed for Step 3.
 
 ### Runner using leaderboard_run (primary)
 
@@ -189,7 +192,7 @@ If results are unexpectedly bad, note this explicitly. That signals the **leader
 
 ## Step 5: Send Discord Message
 
-Use the Discord MCP to send a 2-5 sentence summary to the designated channel.
+Use the `mcp__discord-bot__send_discord` tool to send a 2-5 sentence summary to the channel named `"bot"`.
 
 Format:
 > **TFWR Iteration <n>: <name>** (<leaderboard>)

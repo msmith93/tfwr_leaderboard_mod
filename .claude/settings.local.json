@@ -3,12 +3,17 @@
     "allow": [
       "Bash(curl:*)",
       "Bash(python3:*)",
+      "Bash(sleep:*)",
       "Bash(dotnet build:*)",
       "Bash(bash build.sh)",
       "Bash(/home/msmith/myprojects/claudeleaderboards/mod/build.sh)",
       "Bash(steam steam://rungameid/2060160)",
+      "Bash(steam steam://run/2060160)",
       "Bash(disown)",
-      "Read(/home/msmith/**)"
+      "Read(/home/msmith/**)",
+      "Write(/home/msmith/myprojects/claudeleaderboards/**)",
+      "Edit(/home/msmith/myprojects/claudeleaderboards/**)",
+      "mcp__discord-bot__send_discord"
     ]
   }
 }
