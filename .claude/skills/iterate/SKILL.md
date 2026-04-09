@@ -1,15 +1,17 @@
 ---
 name: iterate
-description: Run one full leaderboard iteration cycle -- diagnose, write, simulate, capture, analyze, report, and repeat.
+description: Run exactly one leaderboard iteration -- optional diagnostics, write script, simulate (repeat runs within this iteration if needed), results JSON, notes, Discord, tracker update, cleanup. Outer loop is the leaderboard skill.
 disable-model-invocation: true
 argument-hint: "<leaderboard name, e.g. Hay_Single or Dinosaur>"
 ---
 
-# Iterate: Leaderboard Script Development Loop
+# Iterate: Single Leaderboard Iteration
 
 Target leaderboard: $ARGUMENTS
 
-Run one full iteration cycle: diagnose (if needed), write a script, simulate, capture results, analyze, report to Discord, update tracker, and repeat.
+Perform **one** numbered iteration cycle: diagnose (if needed), write a script, simulate, capture results, analyze, report to Discord, update tracker, and clean up. **Do not** start another iteration when finished; the **leaderboard** skill (`.claude/skills/leaderboard/SKILL.md`) decides whether to run this workflow again.
+
+Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in the same iteration (e.g. fix a bug and re-upload, or extra seeds for variance). That is still a single iteration as long as you publish **one** `iteration_<n>_*.py` and **one** primary `iteration_<n>_results.json` for this id.
 
 ## Before Starting
 
@@ -25,7 +27,7 @@ Run one full iteration cycle: diagnose (if needed), write a script, simulate, ca
 - The previous iteration's notes flag **unexpectedly bad results** that suggest incorrect assumptions about game mechanics
 - There are details about the game that the documentation is not clear about that need to be tested in the game
 
-**Skip this step** if no diagnostics are needed of if this is a subsequent iteration with no anomalies.
+**Skip this step** if no diagnostics are needed or if this is a subsequent iteration with no anomalies.
 
 ### What to diagnose
 
@@ -183,7 +185,7 @@ What worked, what didn't. Identify bottlenecks.
 Concrete ideas for the next iteration. Be specific about what to change and why.
 ```
 
-If results are unexpectedly bad, note this explicitly. This will trigger Step 0 diagnostics on the next iteration.
+If results are unexpectedly bad, note this explicitly. That signals the **leaderboard** skill (or the next **iterate** pass) to consider Step 0 diagnostics.
 
 ## Step 5: Send Discord Message
 
@@ -197,7 +199,7 @@ Format:
 
 If this is the first iteration, skip the comparison line.
 
-## Step 6: Update Tracker and Repeat
+## Step 6: Update Tracker and Cleanup
 
 Update `iterations/iteration_tracker.json`:
 
@@ -236,4 +238,6 @@ After updating the tracker, clean up all temporary scripts from the game using `
 curl -s -X POST http://localhost:8787/delete-script -d '{"filename": "runner"}'
 ```
 
-Then **loop back to Step 1** and begin the next iteration.
+### Handoff
+
+**Stop here.** This iteration is complete. The **leaderboard** skill decides whether to read this file again for another pass; the user may also invoke **iterate** alone for a single step. Do not loop back to Step 1 on your own.
