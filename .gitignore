@@ -2,3 +2,4 @@ __pycache__
 documentation
 .claude
 !.claude/skills
+!.claude/skills/leaderboards
