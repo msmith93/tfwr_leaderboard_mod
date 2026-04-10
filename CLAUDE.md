@@ -121,6 +121,14 @@ run_time = simulate(filename, sim_unlocks, sim_items, sim_globals, seed, speedup
 | Calibration data | `diagnostics/calibration_<leaderboard>.json` |
 | Master tracker | `iterations/iteration_tracker.json` |
 
+### Running benchmarks (`scripts/run_algorithm.py`)
+
+The **leaderboard** skill resolves whether to use an **observer preview** (ask the user if not specified). Run:
+
+`python3 scripts/run_algorithm.py <path> <game_filename> <Leaderboard> [speedup] [--demo-seconds N]`
+
+When `N` > 0, the helper runs `leaderboard_run` at **1×** for `N` wall-clock seconds (then stops) before the high-speed benchmark. Default omits the preview (`N` omitted = 0). For `iteration_<n>_results.json`, parse `FINAL_TIME` only from the **benchmark** phase, not the preview (see `.claude/skills/iterate/SKILL.md` Step 2).
+
 ### Results JSON schema
 
 ```json
@@ -188,7 +196,7 @@ Concrete ideas for the next iteration.
 
 In Cursor, the same three skills are available under `.cursor/skills/<name>/SKILL.md` (symlinked to `.claude/skills/`).
 
-- **leaderboard** -- Full flow from a user prompt to the strongest script: read `.claude/skills/leaderboard/SKILL.md`; loops by following **iterate** until stop criteria (max iterations, diminishing returns, user direction).
+- **leaderboard** -- Full flow from a user prompt to the strongest script: read `.claude/skills/leaderboard/SKILL.md`; resolves observer demo (ask if needed); loops by following **iterate** until stop criteria (max iterations, diminishing returns, user direction).
 - **iterate** -- Exactly one iteration: optional diagnostics, new script, simulate, results JSON, notes, Discord, tracker update, cleanup. Read `.claude/skills/iterate/SKILL.md` (often invoked manually as `/iterate <leaderboard>` or driven by **leaderboard**).
 - **invoke** -- Reference knowledge for submitting and running scripts via the REST API (loaded automatically when relevant). Read `.claude/skills/invoke/SKILL.md`.
 

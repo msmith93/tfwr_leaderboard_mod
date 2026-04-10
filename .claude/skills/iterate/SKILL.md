@@ -9,6 +9,8 @@ argument-hint: "<leaderboard name, e.g. Hay_Single or Dinosaur>"
 
 Target leaderboard: $ARGUMENTS
 
+Invocation context may include **`demo_seconds`** from the **leaderboard** skill (`0` = skip observer preview, or `N` > 0 for a real-time preview of `N` wall-clock seconds before the benchmark). If you are running **iterate** standalone and the user did not specify demo behavior, use **`demo_seconds: 0`** (no mandatory ask).
+
 Perform **one** numbered iteration cycle: diagnose (if needed), write a script, simulate, capture results, analyze, report to Discord, update tracker, and clean up. **Do not** start another iteration when finished; the **leaderboard** skill (`.claude/skills/leaderboard/SKILL.md`) decides whether to run this workflow again.
 
 Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in the same iteration (e.g. fix a bug and re-upload, or extra seeds for variance). That is still a single iteration as long as you publish **one** `iteration_<n>_*.py` and **one** primary `iteration_<n>_results.json` for this id.
@@ -79,15 +81,27 @@ Examples of useful measurements:
 
 ## Step 2: Run Simulations
 
-Use the pre-approved helper (auto-approved via `python3:*`, no shell loop prompts):
+Use the pre-approved helper (auto-approved via `python3:*`, no shell loop prompts).
+
+**Without observer preview** (`demo_seconds` is `0` or unset for standalone iterate):
 
 ```bash
 python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000
 ```
 
-This handles: status check → upload → sanity check → stop → leaderboard_run → poll → parse.
+**With observer preview** (session `demo_seconds` > 0, e.g. **15** from the leaderboard skill):
 
-Capture the full terminal output; it contains all `FINAL_TIME:` lines needed for Step 3.
+```bash
+python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000 --demo-seconds <demo_seconds>
+```
+
+This handles: status check → upload → sanity check → stop → optional **1×** `leaderboard_run` for `--demo-seconds` wall time (then stop) → high-speed `leaderboard_run` → poll → parse.
+
+### Observer preview (benchmark metrics only)
+
+When `--demo-seconds` is used, the game runs at **real-time** briefly so observers can watch; execution is stopped after `N` wall-clock seconds. **Do not** use any `FINAL_TIME:` lines from that demo phase for Step 3. Use only the **benchmark** portion of the run: `run_algorithm.py` labels output sections; parse `FINAL_TIME:` values for `iteration_<n>_results.json` from the benchmark output only (typically the block after `=== BENCHMARK ===` / the final full-speed run).
+
+Capture the full terminal output for logs; for Step 3 statistics, rely on `FINAL_TIME:` lines that belong to the high-speed benchmark (ignore demo-phase timings if any appear).
 
 ### Runner using leaderboard_run (primary)
 

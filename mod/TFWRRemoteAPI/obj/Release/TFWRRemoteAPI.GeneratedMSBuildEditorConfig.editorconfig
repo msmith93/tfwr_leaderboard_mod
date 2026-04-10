@@ -1,6 +1,6 @@
 is_global = true
 build_property.RootNamespace = TFWRRemoteAPI
-build_property.ProjectDir = /home/msmith/myprojects/claudedino/mod/TFWRRemoteAPI/
+build_property.ProjectDir = /home/msmith/myprojects/claudeleaderboards/mod/TFWRRemoteAPI/
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 
 build_property.CsWinRTUseWindowsUIXamlProjections = false

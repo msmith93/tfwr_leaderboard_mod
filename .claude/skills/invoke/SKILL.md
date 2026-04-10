@@ -14,7 +14,7 @@ All API interaction should go through the pre-approved Python helper scripts in 
 
 | Script | Purpose |
 |---|---|
-| `python3 scripts/run_algorithm.py <path> <filename> <leaderboard> [speedup]` | Full two-step flow: upload → sanity check → stop → leaderboard_run → poll → parse |
+| `python3 scripts/run_algorithm.py <path> <filename> <leaderboard> [speedup] [--demo-seconds N]` | Full flow: waits for `graphics_ready` → upload → sanity check → stop → optional **1×** `leaderboard_run` at speedup **1** for `N` wall-clock seconds (then stop) → high-speed `leaderboard_run` → poll → parse |
 | `python3 scripts/poll.py` | Show current poll status and output |
 | `python3 scripts/stop.py` | Stop any active execution |
 
@@ -28,19 +28,25 @@ curl -s -X POST http://localhost:8787/delete-script -H "Content-Type: applicatio
 
 ## Prerequisites
 
-Before any API call, verify the game is ready:
+Before **`POST /run-script`** (or any execution that opens or uses a `CodeWindow` for parsing), the GPU must be initialized. The mod exposes this on **`GET /status`** as **`graphics_ready`**.
+
+**Required before uploads / runs:** both `"ready": true` and `"graphics_ready": true`.
 
 ```bash
 curl -s http://localhost:8787/status
 ```
 
-Expected: `"ready": true`. If connection is refused, the game isn't running or the mod isn't loaded.
+If connection is refused, the game isn't running or the mod isn't loaded. If `ready` is true but `graphics_ready` is false, wait and poll (e.g. every 0.5–1s) until the graphics device comes up—common right after launch or when the window hasn't fully initialized under Proton.
+
+**Python helpers:** `scripts/api.py` provides `wait_until_ready_for_run()`; `scripts/run_algorithm.py` calls it automatically before any `submit`. For custom scripts, import `api` and call `api.wait_until_ready_for_run()` before `submit` / `submit_file`.
 
 ## Core Principle: execute mode + in-game simulation functions
 
 Always submit scripts with **`mode: "execute"`**. To run leaderboard-style simulations, the script itself calls the game's built-in `leaderboard_run()` or `simulate()` function.
 
 Do NOT use `mode: "simulate"` in the API.
+
+Default **`open_editor`** is **`true`** in the mod and in `scripts/api.submit` / `submit_file`: the code window opens for parsing (reliable with Core’s `Parser.Parse`). Under Proton/Wine, **wait for `graphics_ready` on `GET /status`** (and use `api.wait_until_ready_for_run()` before submits) so the GPU is initialized first. Set **`open_editor`: false** only if you explicitly want to avoid opening the editor and accept the scratch/existing-window parse path.
 
 ## Two Methods for Simulation
 
@@ -88,7 +94,13 @@ Use the pre-approved helper script — it handles the full flow without shell lo
 python3 scripts/run_algorithm.py iterations/iteration_5_spiral.py iteration_5_spiral Dinosaur 5000
 ```
 
-This does: upload → sanity check → stop → leaderboard_run → poll → parse FINAL_TIME lines.
+Observer preview (real-time, for humans watching): add `--demo-seconds 15` (or another `N`). The script runs `leaderboard_run` at **1×** for `N` wall-clock seconds, stops, then runs the benchmark at `[speedup]` (default 5000).
+
+```bash
+python3 scripts/run_algorithm.py iterations/iteration_5_spiral.py iteration_5_spiral Dinosaur 5000 --demo-seconds 15
+```
+
+This does: upload → sanity check → stop → optional demo at 1× → stop → benchmark `leaderboard_run` → poll → parse FINAL_TIME lines. For iteration results JSON, parse `FINAL_TIME` only from the **benchmark** phase (see iterate skill).
 
 Other helpers (all `python3:*`, auto-approved):
 ```bash
@@ -150,7 +162,7 @@ Note: `sum()` is not available in the game interpreter. Use an explicit accumula
 
 The `output` field from `/poll` contains all `quick_print()` output as a single string with `\n` separators.
 
-For `leaderboard_run` output, parse all `FINAL_TIME: <value>` lines:
+For `leaderboard_run` output, parse all `FINAL_TIME: <value>` lines from the **benchmark** run only. If you used `--demo-seconds`, ignore any `FINAL_TIME` lines produced during the short 1× preview (the helper prints `=== BENCHMARK ===` before the timed run; only that phase’s output should feed statistics).
 
 ```python
 import re
@@ -179,6 +191,7 @@ This removes the `.py` file from the game's save directory and closes the code w
 | Problem | Symptom | Fix |
 |---|---|---|
 | Game not running | Connection refused on curl | Start the game, load a save, verify with `GET /status` |
+| GPU not ready | `graphics_ready: false` or run-script error about graphics | Poll `GET /status` until `graphics_ready` is true; use `api.wait_until_ready_for_run()` |
 | Mod not loaded | Connection refused or no response | Rebuild mod (`cd mod && bash build.sh`), restart game |
 | Script parse error | `output` contains error text after step 1 | Fix the algorithm script syntax (check interpreter restrictions in CLAUDE.md) |
 | Run hung/timeout | `/poll` never returns `finished: true` | `POST /stop`, then retry |

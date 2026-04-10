@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TFWRRemoteAPI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ce32902be8d016b741081249ef872a42d38319f2")]
 [assembly: System.Reflection.AssemblyProductAttribute("TFWRRemoteAPI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TFWRRemoteAPI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

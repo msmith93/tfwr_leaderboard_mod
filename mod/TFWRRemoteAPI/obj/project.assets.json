@@ -368,11 +368,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/home/msmith/myprojects/claudedino/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
+      "projectUniqueName": "/home/msmith/myprojects/claudeleaderboards/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
       "projectName": "TFWRRemoteAPI",
-      "projectPath": "/home/msmith/myprojects/claudedino/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
+      "projectPath": "/home/msmith/myprojects/claudeleaderboards/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
       "packagesPath": "/home/msmith/.nuget/packages/",
-      "outputPath": "/home/msmith/myprojects/claudedino/mod/TFWRRemoteAPI/obj/",
+      "outputPath": "/home/msmith/myprojects/claudeleaderboards/mod/TFWRRemoteAPI/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "/home/msmith/.nuget/NuGet/NuGet.Config"

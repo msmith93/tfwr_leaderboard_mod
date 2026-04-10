@@ -13,17 +13,15 @@ namespace TFWRRemoteAPI
     {
         private static int _mainThreadId;
 
-        public static int MainThreadId
-        {
-            get
-            {
-                if (_mainThreadId == 0)
-                    _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-                return _mainThreadId;
-            }
-        }
+        /// <summary>
+        /// Unity main thread id. Must be set via <see cref="EnsureMainThread"/> from the game
+        /// main thread (e.g. Plugin.Awake) before any HTTP handler runs — otherwise the first
+        /// REST call would capture a thread-pool id and RunOnMainThreadSync would execute Unity
+        /// API on the wrong thread (native crash).
+        /// </summary>
+        public static int MainThreadId => _mainThreadId;
 
-        // Initialize on first Update call from Plugin
+        /// <summary>Call once from Unity's main thread (e.g. start of Plugin.Awake).</summary>
         public static void EnsureMainThread()
         {
             if (_mainThreadId == 0)
@@ -102,24 +100,36 @@ namespace TFWRRemoteAPI
 
         /// <summary>
         /// Parse code string into a syntax tree without needing a CodeWindow.
-        /// Returns null if parsing fails.
+        /// Core's Parser.Parse(TokenStream, CodeWindow) requires a CodeWindow; passing null always fails.
+        /// If <paramref name="scratchWindow"/> is non-null, temporarily swaps its text to <paramref name="code"/>, parses, then restores.
         /// </summary>
-        public static Node ParseCodeDirect(string code)
+        public static Node ParseCodeDirect(string code, CodeWindow scratchWindow)
         {
+            if (scratchWindow == null)
+            {
+                Plugin.Log.LogError("ParseCodeDirect: scratchWindow is null");
+                return null;
+            }
+            string previous = scratchWindow.CodeInput.text;
             try
             {
+                scratchWindow.CodeInput.text = code;
                 if (!Tokenizer.Tokenize(code, out TokenStream stream))
                 {
                     Plugin.Log.LogError("Tokenization failed");
                     return null;
                 }
-                var program = Parser.Parse(stream, null);
+                var program = Parser.Parse(stream, scratchWindow);
                 return program?.syntaxTree;
             }
             catch (Exception ex)
             {
                 Plugin.Log.LogError($"Direct parse failed: {ex.Message}");
                 return null;
+            }
+            finally
+            {
+                scratchWindow.CodeInput.text = previous;
             }
         }
 

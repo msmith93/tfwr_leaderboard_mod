@@ -9,6 +9,7 @@ using System.Threading;
 using BepInEx;
 using BepInEx.Logging;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace TFWRRemoteAPI
 {
@@ -47,6 +48,8 @@ namespace TFWRRemoteAPI
 
         private void Awake()
         {
+            GameBridge.EnsureMainThread();
+
             Instance = this;
             Log = Logger;
             Log.LogInfo("TFWR Remote API plugin loaded!");
@@ -82,6 +85,8 @@ namespace TFWRRemoteAPI
 
         private void Update()
         {
+            GameBridge.EnsureMainThread();
+
             // Drain main-thread queue
             while (_mainThreadQueue.TryDequeue(out var action))
             {
@@ -237,19 +242,43 @@ namespace TFWRRemoteAPI
         {
             string result = RunOnMainThreadSync(() =>
             {
+                bool graphicsReady = IsGraphicsReady();
                 var mainSim = MainSim.Inst;
                 if (mainSim == null)
-                    return "{\"ready\":false}";
+                {
+                    return $"{{\"ready\":false,\"graphics_ready\":{Bool(graphicsReady)}}}";
+                }
 
                 bool executing = mainSim.IsExecuting();
                 bool simulating = mainSim.MightBeSimulating();
                 string activeRun = _activeRunId ?? "";
                 bool runDone = _runFinished;
 
-                return $"{{\"ready\":true,\"executing\":{Bool(executing)},\"simulating\":{Bool(simulating)},"
+                return $"{{\"ready\":true,\"graphics_ready\":{Bool(graphicsReady)},\"executing\":{Bool(executing)},\"simulating\":{Bool(simulating)},"
                      + $"\"active_run_id\":\"{Escape(activeRun)}\",\"run_finished\":{Bool(runDone)}}}";
             });
             return result;
+        }
+
+        /// <summary>
+        /// True when Unity reports a real GPU (not Null). Opening the code editor / TMP under Proton
+        /// crashes if this is false ("Graphics device is null" in player logs).
+        /// </summary>
+        private static bool IsGraphicsReady()
+        {
+            try
+            {
+                if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+                    return false;
+                string name = SystemInfo.graphicsDeviceName;
+                if (string.IsNullOrEmpty(name))
+                    return false;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private string HandleRunScript(HttpListenerRequest request)
@@ -270,6 +299,10 @@ namespace TFWRRemoteAPI
 
             if (string.IsNullOrEmpty(code))
                 return JsonError("'code' field is required");
+
+            // Default true: Parser.Parse is reliable with a real code window. GET /status graphics_ready
+            // and the run-script guard ensure the GPU is up before OpenCodeFile/TMP run under Proton.
+            bool openEditor = ExtractJsonBool(body, "open_editor", true);
 
             string runId = Guid.NewGuid().ToString("N").Substring(0, 8);
 
@@ -295,27 +328,60 @@ namespace TFWRRemoteAPI
                     // Sync workspace from files on disk
                     Saver.ApplyCodeChanges(mainSim.workspace);
 
-                    if (mainSim.workspace.codeWindows.TryGetValue(filename, out var existingCw))
+                    if (!IsGraphicsReady())
+                        return JsonError("Graphics device not ready; poll GET /status until graphics_ready is true before run-script.");
+
+                    CodeWindow scratchForParse = null;
+
+                    if (openEditor)
                     {
-                        GameBridge.ReactivateCodeWindow(existingCw, code);
-                    }
-                    else
-                    {
-                        try
+                        if (mainSim.workspace.codeWindows.TryGetValue(filename, out var existingCw))
                         {
-                            GameBridge.OpenCodeFile(mainSim, filename, code);
-                        }
-                        catch (Exception openEx)
-                        {
-                            Log.LogWarning($"OpenCodeFile failed for '{filename}': {openEx.Message}");
-                        }
-                        if (mainSim.workspace.codeWindows.TryGetValue(filename, out var newCw))
-                        {
-                            newCw.CodeInput.text = code;
+                            GameBridge.ReactivateCodeWindow(existingCw, code);
                         }
                         else
                         {
-                            Log.LogWarning($"Code window not available for '{filename}', will use direct parse for execution");
+                            try
+                            {
+                                GameBridge.OpenCodeFile(mainSim, filename, code);
+                            }
+                            catch (Exception openEx)
+                            {
+                                Log.LogWarning($"OpenCodeFile failed for '{filename}': {openEx.Message}");
+                            }
+                            if (mainSim.workspace.codeWindows.TryGetValue(filename, out var newCw))
+                            {
+                                newCw.CodeInput.text = code;
+                            }
+                            else
+                            {
+                                Log.LogWarning($"Code window not available for '{filename}', will use direct parse for execution");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Log.LogInfo($"open_editor=false: UI hidden for '{filename}'; reusing any CodeWindow for Parser.Parse (Core requires CodeWindow)");
+                        foreach (var kv in mainSim.workspace.codeWindows)
+                        {
+                            scratchForParse = kv.Value;
+                            break;
+                        }
+                        if (scratchForParse == null)
+                        {
+                            try
+                            {
+                                GameBridge.OpenCodeFile(mainSim, "__api_scratch", "# api scratch\n");
+                            }
+                            catch (Exception openEx)
+                            {
+                                return JsonError($"open_editor=false needs a CodeWindow for parsing; could not create scratch: {openEx.Message}");
+                            }
+                            if (!mainSim.workspace.codeWindows.TryGetValue("__api_scratch", out scratchForParse)
+                                || scratchForParse == null)
+                            {
+                                return JsonError("open_editor=false: scratch CodeWindow missing after OpenCodeFile");
+                            }
                         }
                     }
 
@@ -348,8 +414,8 @@ namespace TFWRRemoteAPI
                     }
                     else
                     {
-                        // Direct execution
-                        if (mainSim.workspace.codeWindows.TryGetValue(filename, out var codeWindow))
+                        // Direct execution: Parser.Parse requires a CodeWindow instance in Core.dll.
+                        if (openEditor && mainSim.workspace.codeWindows.TryGetValue(filename, out var codeWindow))
                         {
                             var node = codeWindow.Parse();
                             if (node != null)
@@ -363,12 +429,17 @@ namespace TFWRRemoteAPI
                         }
                         else
                         {
-                            // Fallback: parse and execute without a code window
-                            var node = GameBridge.ParseCodeDirect(code);
+                            var parseCw = scratchForParse;
+                            if (parseCw == null && mainSim.workspace.codeWindows.TryGetValue(filename, out var namedCw))
+                                parseCw = namedCw;
+                            if (parseCw == null)
+                                return JsonError("No CodeWindow available for parse (open_editor=false with empty workspace?)");
+
+                            var node = GameBridge.ParseCodeDirect(code, parseCw);
                             if (node != null)
                             {
                                 mainSim.StartMainExecution(null, node);
-                                Log.LogInfo($"Executing '{filename}' via direct parse (no code window)");
+                                Log.LogInfo($"Executing '{filename}' via direct parse (scratch CodeWindow)");
                             }
                             else
                             {
@@ -377,7 +448,7 @@ namespace TFWRRemoteAPI
                         }
                     }
 
-                    return $"{{\"started\":true,\"run_id\":\"{runId}\",\"mode\":\"{Escape(mode)}\"}}";
+                    return $"{{\"started\":true,\"run_id\":\"{runId}\",\"mode\":\"{Escape(mode)}\",\"open_editor\":{Bool(openEditor)}}}";
                 }
                 catch (Exception ex)
                 {
@@ -563,7 +634,8 @@ namespace TFWRRemoteAPI
 
         private string RunOnMainThreadSync(Func<string> func, int timeoutMs = 10000)
         {
-            if (Thread.CurrentThread.ManagedThreadId == GameBridge.MainThreadId)
+            int mainId = GameBridge.MainThreadId;
+            if (mainId != 0 && Thread.CurrentThread.ManagedThreadId == mainId)
             {
                 return func();
             }
@@ -617,6 +689,28 @@ namespace TFWRRemoteAPI
                     .Replace("\n", "\\n")
                     .Replace("\r", "\\r")
                     .Replace("\t", "\\t");
+        }
+
+        /// <summary>
+        /// Reads a JSON boolean for the given key. Returns defaultValue if the key is missing or not true/false.
+        /// </summary>
+        internal static bool ExtractJsonBool(string json, string key, bool defaultValue)
+        {
+            string pattern = "\"" + key + "\"";
+            int idx = json.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                return defaultValue;
+            idx += pattern.Length;
+            while (idx < json.Length && (json[idx] == ' ' || json[idx] == ':' || json[idx] == '\t'))
+                idx++;
+
+            if (idx + 4 <= json.Length &&
+                string.Compare(json, idx, "true", 0, 4, StringComparison.OrdinalIgnoreCase) == 0)
+                return true;
+            if (idx + 5 <= json.Length &&
+                string.Compare(json, idx, "false", 0, 5, StringComparison.OrdinalIgnoreCase) == 0)
+                return false;
+            return defaultValue;
         }
 
         // Minimal JSON string extractor (no external JSON lib in .NET 4.6)

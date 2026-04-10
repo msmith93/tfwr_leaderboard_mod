@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "RCWrPAAcr/w=",
+  "dgSpecHash": "XDOwOObj/qE=",
   "success": true,
-  "projectFilePath": "/home/msmith/myprojects/claudedino/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
+  "projectFilePath": "/home/msmith/myprojects/claudeleaderboards/mod/TFWRRemoteAPI/TFWRRemoteAPI.csproj",
   "expectedPackageFiles": [
     "/home/msmith/.nuget/packages/microsoft.netframework.referenceassemblies/1.0.3/microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
     "/home/msmith/.nuget/packages/microsoft.netframework.referenceassemblies.net46/1.0.3/microsoft.netframework.referenceassemblies.net46.1.0.3.nupkg.sha512"

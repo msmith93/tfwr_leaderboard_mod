@@ -46,6 +46,7 @@ Returns the current game state.
 ```json
 {
   "ready": true,
+  "graphics_ready": true,
   "executing": false,
   "simulating": false,
   "active_run_id": "",
@@ -54,6 +55,7 @@ Returns the current game state.
 ```
 
 - `ready` - whether `MainSim` is initialized
+- `graphics_ready` - whether Unity reports a real GPU (`GraphicsDeviceType` is not `Null` and `graphicsDeviceName` is non-empty). Poll until this is `true` before `POST /run-script` so opening the code editor (or scratch `CodeWindow` for parsing) does not crash under Proton/Wine when the device is not up yet.
 - `executing` - whether code is currently executing (direct mode)
 - `simulating` - whether a simulation is running
 - `active_run_id` - ID of the current run (empty if none)
@@ -83,6 +85,7 @@ Runs a script in the game. Accepts JSON body:
 | `code`     | Yes      | -             | Python-like script code to run                                            |
 | `filename` | No       | `claude_diag` | Name for the code file (without `.py`)                                    |
 | `mode`     | No       | `execute`     | `"execute"` for direct run, `"simulate"` for leaderboard-style simulation |
+| `open_editor` | No    | **`true`**    | If `true` (default), opens/refreshes the in-game code window for that filename and parses through it (most reliable). Poll **`GET /status`** until **`graphics_ready`** before calling `run-script` so TMP/meshes are safe under Proton. If **`false`**, the editor is not shown; parsing uses another open `CodeWindow` or a hidden `__api_scratch` window (can fail if none exist). |
 | `seed`     | No       | `-1`          | RNG seed for simulate mode (-1 = random)                                  |
 | `items`    | No       | `{}`          | Starting items for simulate mode (e.g. `{"cactus": 1000000000}`)          |
 | `unlocks`  | No       | all at max    | Unlocks for simulate mode (e.g. `{"speed": 3, "expand": 1}`)             |
@@ -95,8 +98,10 @@ Runs a script in the game. Accepts JSON body:
 **Response:**
 
 ```json
-{ "started": true, "run_id": "a1b2c3d4", "mode": "simulate" }
+{ "started": true, "run_id": "a1b2c3d4", "mode": "simulate", "open_editor": true }
 ```
+
+The `open_editor` field echoes what was used for that request.
 
 ### `GET /poll`
 
