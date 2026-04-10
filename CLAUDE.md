@@ -186,6 +186,8 @@ Concrete ideas for the next iteration.
 
 ## Skills
 
+In Cursor, the same three skills are available under `.cursor/skills/<name>/SKILL.md` (symlinked to `.claude/skills/`).
+
 - **leaderboard** -- Full flow from a user prompt to the strongest script: read `.claude/skills/leaderboard/SKILL.md`; loops by following **iterate** until stop criteria (max iterations, diminishing returns, user direction).
 - **iterate** -- Exactly one iteration: optional diagnostics, new script, simulate, results JSON, notes, Discord, tracker update, cleanup. Read `.claude/skills/iterate/SKILL.md` (often invoked manually as `/iterate <leaderboard>` or driven by **leaderboard**).
 - **invoke** -- Reference knowledge for submitting and running scripts via the REST API (loaded automatically when relevant). Read `.claude/skills/invoke/SKILL.md`.
