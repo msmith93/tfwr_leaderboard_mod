@@ -91,6 +91,12 @@ python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n
 
 **With observer preview** (session `demo_seconds` > 0, e.g. **15** from the leaderboard skill):
 
+First, write a 1-2 sentence summary of the what has changed in the most recent iteration that you are running. If this is the first iteration, simply state what it does. Use the following command to "say" this summary out loud:
+
+```bash
+./scripts/tts.py "<summary>" --voice am_adam
+```
+
 ```bash
 python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000 --demo-seconds <demo_seconds>
 ```

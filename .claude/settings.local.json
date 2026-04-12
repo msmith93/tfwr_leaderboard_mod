@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(curl:*)",
-      "Bash(python3:*)",
+      "Bash(python3 iterations:*)",
+      "Bash(python3 diagnostics:*)",
       "Bash(sleep:*)",
       "Bash(dotnet build:*)",
       "Bash(bash build.sh)",
@@ -10,10 +11,13 @@
       "Bash(steam steam://rungameid/2060160)",
       "Bash(steam steam://run/2060160)",
       "Bash(disown)",
-      "Read(/home/msmith/**)",
+      "Read(/home/msmith/myprojects/claudeleaderboards/**)",
       "Write(/home/msmith/myprojects/claudeleaderboards/**)",
       "Edit(/home/msmith/myprojects/claudeleaderboards/**)",
-      "mcp__discord-bot__send_discord"
+      "mcp__discord-bot__send_discord",
+      "Bash(python3 scripts:*)",
+      "Bash(python3:*)",
+      "Bash(./scripts/tts.py:*)"
     ]
   }
 }
