@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "deny": ["WebSearch", "WebFetch"],
     "allow": [
       "Bash(curl:*)",
       "Bash(python3 iterations:*)",

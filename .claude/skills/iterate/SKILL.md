@@ -1,7 +1,6 @@
 ---
 name: iterate
 description: Run exactly one leaderboard iteration -- optional diagnostics, write script, simulate (repeat runs within this iteration if needed), results JSON, notes, Discord, tracker update, cleanup. Outer loop is the leaderboard skill.
-disable-model-invocation: true
 argument-hint: "<leaderboard name, e.g. Hay_Single or Dinosaur>"
 ---
 
@@ -17,10 +16,29 @@ Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in
 
 ## Before Starting
 
+**First, create a task checklist for this iteration** using TaskCreate. Register one task per mandatory step before doing any other work. Replace `N` with the actual iteration number once you determine it (step 1 below).
+
+Tasks to create:
+- `[iter N] Before Starting` — read tracker, leaderboard.md, builtins, prior notes
+- `[iter N] Step 1: Write Script`
+- `[iter N] Step 2: Run Simulations`
+- `[iter N] Step 3: Capture Results JSON`
+- `[iter N] Step 4: Analyze and Save Notes`
+- `[iter N] Step 5: Send Discord Message`
+- `[iter N] Step 6: Update Tracker and Cleanup`
+
+If Step 0 diagnostics are needed (see below), also create `[iter N] Step 0: Diagnostics`.
+
+Mark each task `in_progress` when you start it and `completed` when it is done. **Do not begin a step until the previous task is marked completed.**
+
+---
+
 1. Read `iterations/iteration_tracker.json` to understand the current state.
 2. Read `documentation/docs/unlocks/leaderboard.md` to confirm the win condition and starting inventory for the target leaderboard.
 3. Read `documentation/builtins.py` to understand available game functions.
 4. If previous iterations exist, read the most recent `iterations/iteration_<n>_notes.md` to understand what has been tried.
+
+→ Mark `[iter N] Before Starting` **completed**.
 
 ## Step 0 (Conditional): Run Diagnostics
 
@@ -32,6 +50,11 @@ Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in
 **Skip this step** if no diagnostics are needed or if this is a subsequent iteration with no anomalies.
 
 ### What to diagnose
+
+**With observer preview** (`demo_seconds` > 0): Before running any diagnostic, say out loud what you are measuring and why it matters for the strategy.
+```bash
+./scripts/tts.py "<what you're measuring and why>" --voice am_adam
+```
 
 Write small, focused scripts that each measure one thing. Use `get_tick_count()`, `get_time()`, and `quick_print()` to capture measurements. Submit each via the API with `mode: "execute"` (see the invoke skill for the API flow).
 
@@ -63,6 +86,13 @@ Examples of useful measurements:
 
 - Review any existing calibration file before running diagnostics to avoid re-measuring known values.
 
+**With observer preview** (`demo_seconds` > 0): Say the key number(s) you found and how they change your plan.
+```bash
+./scripts/tts.py "<key finding and how it affects strategy>" --voice am_adam
+```
+
+→ Mark `[iter N] Step 0: Diagnostics` **completed**.
+
 ## Step 1: Write a New Iteration Script
 
 1. Determine the next iteration number from `iterations/iteration_tracker.json`.
@@ -70,6 +100,13 @@ Examples of useful measurements:
 3. Read notes from previous iterations to understand what has been tried and what to improve.
 4. Read the relevant game mechanics docs in `documentation/docs/unlocks/` for the target leaderboard.
 5. Write the algorithm script and save it as `iterations/iteration_<n>_<name>.py`.
+
+**With observer preview** (`demo_seconds` > 0): Before writing the script, announce your strategy — the approach and the key mechanic or tradeoff you're exploiting.
+```bash
+./scripts/tts.py "<strategy announcement>" --voice am_adam
+```
+
+→ Once the script file is saved, mark `[iter N] Step 1: Write Script` **completed**.
 
 ### Script requirements
 
@@ -83,6 +120,8 @@ Examples of useful measurements:
 
 Use the pre-approved helper (auto-approved via `python3:*`, no shell loop prompts).
 
+**Bash timeout:** always pass `timeout: 120000` (2 minutes) on the Bash tool call for `run_algorithm.py`. Do not use a longer timeout.
+
 **Without observer preview** (`demo_seconds` is `0` or unset for standalone iterate):
 
 ```bash
@@ -91,10 +130,11 @@ python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n
 
 **With observer preview** (session `demo_seconds` > 0, e.g. **15** from the leaderboard skill):
 
-First, write a 1-2 sentence summary of the what has changed in the most recent iteration that you are running. If this is the first iteration, simply state what it does. Use the following command to "say" this summary out loud:
+**Interview mode:** TTS is your only voice. The interviewer watches the game window but cannot read your thoughts. Narrate every meaningful decision, strategy choice, and reaction to results — out loud, in plain English, as if explaining your reasoning to a senior engineer watching over your shoulder. Be specific (cite numbers, mechanics, tradeoffs), stay concise (1-3 sentences per call), and keep energy up.
 
+Say what you're submitting and what result you're hoping for:
 ```bash
-./scripts/tts.py "<summary>" --voice am_adam
+./scripts/tts.py "<what you're running and what you expect>" --voice am_adam
 ```
 
 ```bash
@@ -108,6 +148,8 @@ This handles: status check → upload → sanity check → stop → optional **1
 When `--demo-seconds` is used, the game runs at **real-time** briefly so observers can watch; execution is stopped after `N` wall-clock seconds. **Do not** use any `FINAL_TIME:` lines from that demo phase for Step 3. Use only the **benchmark** portion of the run: `run_algorithm.py` labels output sections; parse `FINAL_TIME:` values for `iteration_<n>_results.json` from the benchmark output only (typically the block after `=== BENCHMARK ===` / the final full-speed run).
 
 Capture the full terminal output for logs; for Step 3 statistics, rely on `FINAL_TIME:` lines that belong to the high-speed benchmark (ignore demo-phase timings if any appear).
+
+→ Once the run completes and output is captured, mark `[iter N] Step 2: Run Simulations` **completed**.
 
 ### Runner using leaderboard_run (primary)
 
@@ -181,6 +223,13 @@ The results JSON must follow this schema:
 
 Compute `std_time_seconds`: for each run, compute `(t - mean)^2`, sum those with an accumulator loop, divide by the number of runs, and take the square root.
 
+**With observer preview** (`demo_seconds` > 0): React to the numbers — better or worse than expected? What's the headline metric?
+```bash
+./scripts/tts.py "<reaction to results: better/worse than expected, key number>" --voice am_adam
+```
+
+→ Mark `[iter N] Step 3: Capture Results JSON` **completed**.
+
 ## Step 4: Analyze Results and Save Notes
 
 Create `iterations/iteration_<n>_notes.md` with this structure:
@@ -210,6 +259,13 @@ Concrete ideas for the next iteration. Be specific about what to change and why.
 
 If results are unexpectedly bad, note this explicitly. That signals the **leaderboard** skill (or the next **iterate** pass) to consider Step 0 diagnostics.
 
+**With observer preview** (`demo_seconds` > 0): Share the key insight from this iteration and tease the next direction.
+```bash
+./scripts/tts.py "<key insight and what you'd try next>" --voice am_adam
+```
+
+→ Mark `[iter N] Step 4: Analyze and Save Notes` **completed**.
+
 ## Step 5: Send Discord Message
 
 Use the `mcp__discord-bot__send_discord` tool to send a 2-5 sentence summary to the channel named `"bot"`.
@@ -221,6 +277,8 @@ Format:
 > Next direction: <1-sentence plan for next iteration>.
 
 If this is the first iteration, skip the comparison line.
+
+→ Mark `[iter N] Step 5: Send Discord Message` **completed**.
 
 ## Step 6: Update Tracker and Cleanup
 
@@ -262,5 +320,7 @@ curl -s -X POST http://localhost:8787/delete-script -d '{"filename": "runner"}'
 ```
 
 ### Handoff
+
+→ Mark `[iter N] Step 6: Update Tracker and Cleanup` **completed**.
 
 **Stop here.** This iteration is complete. The **leaderboard** skill decides whether to read this file again for another pass; the user may also invoke **iterate** alone for a single step. Do not loop back to Step 1 on your own.

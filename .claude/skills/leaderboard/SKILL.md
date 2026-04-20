@@ -40,6 +40,14 @@ Before the first iteration:
 
 The **iterate** skill repeats its own “Before Starting” reads each time you run it; you do not need to duplicate every file on every loop, but re-check the tracker after each iteration completes.
 
+**With observer preview** (`demo_seconds` > 0):
+
+**Interview mode:** TTS is your only voice during demo sessions. Open the session with narration — introduce the challenge, state the current best time (if any), and describe what the first experiment will try. Be specific and energetic.
+
+```bash
+./scripts/tts.py “<opening: challenge intro, current best or 'no prior work', first plan>” --voice am_adam
+```
+
 ## Outer loop
 
 Repeat until **stop** (see below):
@@ -50,7 +58,7 @@ Repeat until **stop** (see below):
 - **Why:** the evaluate step (step 2) is supposed to use outcomes and notes to choose the *next* experiment. Writing or running several iterations in one shot skips that feedback and often wastes work (e.g. wrong branch after an unexpected result).
 - **Exception:** only batch multiple iterations in a single turn if the user **explicitly** asks for a fixed, predetermined set (e.g. “run these three thresholds as a grid, no evaluation between”) — and even then, prefer reporting after each run so partial results are visible.
 
-1. **Read and execute** `.claude/skills/iterate/SKILL.md` **once**, passing the same leaderboard, the session **`demo_seconds`** value (`0` or `N`), and any short directive for this iteration (e.g. “try column snake after notes suggest it”) in the invocation context so Steps 0–6 of iterate run exactly **one** numbered iteration.
+1. **Re-read** `.claude/skills/iterate/SKILL.md` **in full** before each iteration — do not rely on memory from prior passes, as context compression can cause steps to be silently skipped. Then execute it end-to-end, passing the same leaderboard, the session **`demo_seconds`** value (`0` or `N`), and any short directive for this iteration (e.g. “try column snake after notes suggest it”) so Steps 0–6 of iterate run exactly **one** numbered iteration.
 
 2. After iterate finishes (tracker updated, cleanup done), **evaluate**:
    - Did mean time (or the user’s metric) set a **new best** in `iteration_tracker.json`?
@@ -59,9 +67,19 @@ Repeat until **stop** (see below):
    - **Hard cap**: do not exceed the session **max iterations** unless the user raises the limit.
    - **User stop**: if the user says to stop or change direction, stop or replan.
 
+   **With observer preview** (`demo_seconds` > 0): Announce the outcome and your next direction out loud — new best, flat result, or stopping, and why.
+   ```bash
+   ./scripts/tts.py "<outcome: new best / flat / stopping, and what direction next>" --voice am_adam
+   ```
+
 3. If not stopping, choose the **next focus** from the latest notes’ “Next Steps” and the tracker, **then** return to step 1 for the **next** iteration only (increment `n` once; do not pre-create later iteration files in the same turn).
 
 ## Stop: deliverables
+
+**With observer preview** (`demo_seconds` > 0): Close the session — state the final best time, what made the winning strategy work, and one idea you'd try with more time.
+```bash
+./scripts/tts.py "<closing: final best time, why it worked, what you'd try next>" --voice am_adam
+```
 
 When you exit the loop, summarize for the user:
 
