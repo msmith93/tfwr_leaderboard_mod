@@ -1,6 +1,6 @@
 # TFWR Leaderboard Automation
 
-**Demo:** [Watch Claude iterate on a Dinosaur leaderboard script](https://youtu.be/cgPKENI8BcY?si=iDeD07lb7u2fi_Ye)
+**Demo:** [Watch Claude Fable iterate on a Pumpkins\_Single leaderboard script](https://youtu.be/cgPKENI8BcY?si=iDeD07lb7u2fi_Ye)
 
 Automated leaderboard script development for **The Farmer Was Replaced** (TFWR). This repo contains two main components:
 
