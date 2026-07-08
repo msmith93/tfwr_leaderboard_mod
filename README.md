@@ -52,18 +52,31 @@ The BepInEx plugin patches TFWR to listen for HTTP requests. The game must be ru
 
 ### Prerequisites
 
-- **The Farmer Was Replaced** (Steam, Unity 6)
-- **BepInEx 5.4.23** installed in the game directory
-- **.NET SDK** (any version targeting `net46`)
+- **The Farmer Was Replaced** (Steam, Unity 6) — runs natively on Windows and Linux (no Proton needed on Windows)
+- **BepInEx 5.4.23** installed in the game directory (Windows and Linux both supported)
+- **.NET SDK** (any version targeting `net46`; available on Windows and Linux)
 
 ### Building and Installing
+
+The build auto-detects your OS and the default Steam install path. Override with `-p:GameDir=...` / `-GameDir`, or the `TFWR_GAME_DIR` environment variable, if the game lives in a non-default Steam library.
+
+**Windows (PowerShell):**
+
+```powershell
+cd mod
+.\build.ps1
+```
+
+**Linux:**
 
 ```bash
 cd mod/
 bash build.sh
 ```
 
-This compiles `TFWRRemoteAPI.dll` and copies it to `BepInEx/plugins/`. Restart the game to load the mod.
+This compiles `TFWRRemoteAPI.dll` and copies it to `BepInEx/plugins/`. Restart the game to load the mod. See [`mod/README.md`](mod/README.md#building) for non-default install paths, the manual `dotnet build` flow, and troubleshooting.
+
+> **⚠️ Windows support is untested.** The Windows build tooling (`build.ps1` and the OS-aware `.csproj`) was written by Claude and has **not** been verified on a real Windows machine. The mod's runtime code is cross-platform, but the build/install path on Windows may need adjustment — please report issues.
 
 ### Verifying
 
@@ -99,6 +112,8 @@ See `mod/README.md` for full parameter docs and examples.
 ## The Agent Skills
 
 Three Claude Code skills orchestrate the full development loop. Invoke them in Claude Code with `/leaderboard`, `/iterate`, or reference `/invoke` for API details.
+
+> **Platform note:** The agent skills (`/leaderboard`, `/iterate`, `/invoke`) and their Python helper scripts are **only supported on Linux**. The Windows support described above covers **building and running the mod / REST API** — the automated iteration workflow is not supported on Windows.
 
 ### `/leaderboard` — Full Development Loop
 
