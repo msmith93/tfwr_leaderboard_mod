@@ -4,18 +4,57 @@ A BepInEx plugin for **The Farmer Was Replaced** that exposes an HTTP API on `lo
 
 ## Prerequisites
 
-- **The Farmer Was Replaced** (Steam, Unity 6)
-- **BepInEx 5.4.23** installed in the game directory
-- **.NET SDK** (for building; any version that supports `net46` target)
+- **The Farmer Was Replaced** (Steam, Unity 6) — runs natively on both Windows and Linux (no Proton required on Windows)
+- **BepInEx 5.4.23** installed in the game directory (Windows and Linux builds are both available)
+- **.NET SDK** (for building; any version that supports the `net46` target — available on Windows and Linux)
 
 ## Building
+
+The build resolves the game install directory automatically per-OS. It picks, in order of precedence:
+
+1. An explicit `GameDir` passed to the build (`-p:GameDir=...` / `-GameDir`)
+2. The `TFWR_GAME_DIR` environment variable
+3. The default Steam location for your OS:
+   - **Windows:** `C:\Program Files (x86)\Steam\steamapps\common\The Farmer Was Replaced`
+   - **Linux:** `~/.local/share/Steam/steamapps/common/The Farmer Was Replaced`
+
+> **⚠️ Windows support is untested.** The Windows build tooling (`build.ps1`, the OS-aware `TFWRRemoteAPI.csproj`, and the Windows instructions below) was written by Claude and has **not** been verified on a real Windows machine. Expect to adjust the game path for your setup; please report anything that doesn't work.
+
+If Steam installed the game to a non-default library (e.g. a second drive), override the path as shown below.
+
+### Windows (PowerShell)
+
+```powershell
+cd mod
+.\build.ps1
+# Non-default Steam library:
+.\build.ps1 -GameDir "D:\SteamLibrary\steamapps\common\The Farmer Was Replaced"
+```
+
+If PowerShell blocks the script due to execution policy, run it explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+### Linux
 
 ```bash
 cd mod/
 bash build.sh
+# Non-default Steam library:
+TFWR_GAME_DIR="/mnt/games/SteamLibrary/steamapps/common/The Farmer Was Replaced" bash build.sh
 ```
 
-This compiles the plugin and copies `TFWRRemoteAPI.dll` to `BepInEx/plugins/`. Restart the game to load the mod.
+### Manual (any OS)
+
+```bash
+cd mod/TFWRRemoteAPI
+dotnet build -c Release -p:GameDir="<path to The Farmer Was Replaced>"
+# Then copy bin/Release/TFWRRemoteAPI.dll into <game>/BepInEx/plugins/
+```
+
+All three flows compile the plugin and copy `TFWRRemoteAPI.dll` to `BepInEx/plugins/`. Restart the game to load the mod.
 
 ## Verifying It Works
 
@@ -297,4 +336,4 @@ GameBridge.cs      - Safe wrappers around game APIs (save paths, code windows, i
 
 - **"Main thread call timed out"** - The game's main thread is busy (e.g., during a heavy simulation). Try `/stop` first.
 - **No output from simulate mode** - Make sure your script uses `quick_print()`. Regular `print()` is not captured.
-- **Build errors about missing types** - Ensure the game DLLs are accessible at the paths in `TFWRRemoteAPI.csproj`. The paths assume a standard Linux/Steam installation.
+- **Build errors about missing types** - The game reference DLLs couldn't be found. `TFWRRemoteAPI.csproj` resolves them from `GameDir`, which defaults to the standard Steam location for your OS (Windows or Linux). If your game lives elsewhere, override it: pass `-p:GameDir="<path>"` (or `-GameDir` to `build.ps1`), or set the `TFWR_GAME_DIR` environment variable.

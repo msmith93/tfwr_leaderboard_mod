@@ -9,7 +9,15 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <GameDir>$([System.Environment]::GetEnvironmentVariable('HOME'))/.local/share/Steam/steamapps/common/The Farmer Was Replaced</GameDir>
+    <!-- Resolve the game install directory. Precedence:
+           1. Explicit override:  dotnet build -p:GameDir="D:\SteamLibrary\...\The Farmer Was Replaced"
+           2. TFWR_GAME_DIR environment variable
+           3. OS-specific default Steam location -->
+    <GameDir Condition="'$(GameDir)' == '' AND '$(TFWR_GAME_DIR)' != ''">$(TFWR_GAME_DIR)</GameDir>
+    <!-- Windows default Steam library -->
+    <GameDir Condition="'$(GameDir)' == '' AND '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\The Farmer Was Replaced</GameDir>
+    <!-- Linux default Steam library -->
+    <GameDir Condition="'$(GameDir)' == '' AND '$(OS)' != 'Windows_NT'">$([System.Environment]::GetEnvironmentVariable('HOME'))/.local/share/Steam/steamapps/common/The Farmer Was Replaced</GameDir>
   </PropertyGroup>
 
   <ItemGroup>

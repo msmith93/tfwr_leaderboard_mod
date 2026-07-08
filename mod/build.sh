@@ -3,14 +3,15 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/TFWRRemoteAPI"
-GAME_DIR="$HOME/.local/share/Steam/steamapps/common/The Farmer Was Replaced"
+# Game install dir. Override with TFWR_GAME_DIR=... for a non-default Steam library.
+GAME_DIR="${TFWR_GAME_DIR:-$HOME/.local/share/Steam/steamapps/common/The Farmer Was Replaced}"
 PLUGIN_DIR="$GAME_DIR/BepInEx/plugins"
 
 echo "Building TFWRRemoteAPI..."
 cd "$PROJECT_DIR"
 
 # Build with .NET SDK targeting net46
-dotnet build -c Release 2>&1
+dotnet build -c Release -p:GameDir="$GAME_DIR" 2>&1
 
 # Find the output DLL
 DLL_PATH="$PROJECT_DIR/bin/Release/TFWRRemoteAPI.dll"
