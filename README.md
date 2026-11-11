@@ -14,8 +14,11 @@ Automated leaderboard script development for **The Farmer Was Replaced** (TFWR).
 ```
 mod/                          BepInEx plugin source
   TFWRRemoteAPI/
-    Plugin.cs                 HTTP listener, endpoint routing
+    Plugin.cs                 HTTP listener, endpoint routing, run tracking
     GameBridge.cs             Safe wrappers for game APIs
+    GameHooks.cs              Compatibility check + hooks that capture run results
+    MiniJson.cs               Dependency-free JSON reader/writer
+  TFWRRemoteAPI.Tests/        Game-independent unit tests (dotnet run)
   build.sh                    Build and install the plugin
   README.md                   Full mod / API reference
 
@@ -104,6 +107,11 @@ Expected:
 | `/stop` | POST | Stop any active execution |
 | `/dismiss` | GET/POST | Dismiss the leaderboard result screen |
 | `/delete-script` | POST | Delete a script file and close its code window |
+| `/saves` | GET | List saves and the active one |
+| `/load-save` | POST | Load a save and close the title menu |
+| `/overlay` | POST | Caption strip and scoreboard drawn over the game |
+| `/camera` | GET/POST | Frame the farm, set zoom |
+| `/screenshot` | GET | Save the current frame |
 
 See `mod/README.md` for full parameter docs and examples.
 

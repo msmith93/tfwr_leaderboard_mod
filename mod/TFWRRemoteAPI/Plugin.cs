@@ -2,14 +2,15 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
 
 namespace TFWRRemoteAPI
 {
@@ -18,33 +19,61 @@ namespace TFWRRemoteAPI
     {
         public const string PluginGuid = "com.claudecode.tfwrapi";
         public const string PluginName = "TFWR Remote API";
-        public const string PluginVersion = "1.0.0";
-        public const int Port = 8787;
+        public const string PluginVersion = "1.1.0";
+        public const int DefaultPort = 8787;
 
         public static Plugin Instance { get; private set; }
         public static ManualLogSource Log { get; private set; }
+
+        // Settings (BepInEx/config/com.claudecode.tfwrapi.cfg)
+        private ConfigEntry<int> _port;
+        private ConfigEntry<bool> _autoDismiss;
+        private ConfigEntry<float> _dismissDelay;
+        private ConfigEntry<int> _mainThreadTimeoutMs;
 
         private HttpListener _listener;
         private Thread _listenerThread;
         private volatile bool _running;
 
-        // Main-thread dispatch queue
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new ConcurrentQueue<Action>();
 
-        // For synchronous main-thread calls from HTTP threads
-        private readonly ConcurrentDictionary<string, ManualResetEventSlim> _pendingEvents
-            = new ConcurrentDictionary<string, ManualResetEventSlim>();
-        private readonly ConcurrentDictionary<string, string> _pendingResults
-            = new ConcurrentDictionary<string, string>();
+        // Captured on the main thread at startup; read from HTTP threads.
+        private string _gameVersion = "";
+        private string _unityVersion = "";
+        private string _outputPath = "";
 
-        // Track active run
-        private volatile string _activeRunId = null;
-        private volatile bool _runFinished = false;
-        private volatile string _runMode = null;
-
-        // Auto-dismiss leaderboard screen
+        // Main-thread only.
+        private int _startingFrames;
         private float _leaderboardScreenOpenTime = -1f;
-        private const float LeaderboardDismissDelay = 3f;
+        // The result screen is only auto-dismissed for runs the API started: armed while such
+        // a run is active and for a short grace period after it ends or is stopped.
+        private float _dismissArmedUntil = -1f;
+        // Set by /load-save: close the title menu once the reloaded scene has settled.
+        private int _closeMenuCountdown = -1;
+        private const float DismissGraceSeconds = 15f;
+
+        // Without ?since=, /poll and /output return the whole output file; cap that.
+        private const long MaxFullOutputBytes = 8L * 1024 * 1024;
+
+        private struct ApiResponse
+        {
+            public int Status;
+            public string Json;
+
+            public static ApiResponse Ok(string json)
+            {
+                return new ApiResponse { Status = 200, Json = json };
+            }
+
+            public static ApiResponse Error(int status, string message)
+            {
+                return new ApiResponse
+                {
+                    Status = status,
+                    Json = new MiniJson.ObjectWriter().Str("error", message).ToString()
+                };
+            }
+        }
 
         private void Awake()
         {
@@ -52,12 +81,32 @@ namespace TFWRRemoteAPI
 
             Instance = this;
             Log = Logger;
-            Log.LogInfo("TFWR Remote API plugin loaded!");
+
+            _port = Config.Bind("General", "Port", DefaultPort, "Port for the HTTP API on localhost.");
+            _autoDismiss = Config.Bind("Leaderboard", "AutoDismissResultScreen", true,
+                "Close the leaderboard result screen automatically after runs started through the API. Runs you start by hand are never auto-dismissed.");
+            _dismissDelay = Config.Bind("Leaderboard", "DismissDelaySeconds", 3f,
+                "How long the result screen stays up before it is auto-dismissed.");
+            _mainThreadTimeoutMs = Config.Bind("General", "MainThreadTimeoutMs", 10000,
+                "How long an API request waits for the game's main thread before giving up.");
+
+            _gameVersion = Application.version ?? "";
+            _unityVersion = Application.unityVersion ?? "";
+            _outputPath = Path.Combine(Application.persistentDataPath, "output.txt");
+
+            Log.LogInfo($"{PluginName} {PluginVersion} loaded (game {_gameVersion}, Unity {_unityVersion})");
+
+            Compat.Init();
+            GameHooks.Install(PluginGuid);
+            if (Compat.Warnings.Count == 0)
+                Log.LogInfo("Compatibility check passed: all game internals found");
+            else
+                Log.LogError($"Compatibility check found {Compat.Warnings.Count} problem(s); see GET /status compat_warnings");
 
             try
             {
                 _listener = new HttpListener();
-                _listener.Prefixes.Add($"http://localhost:{Port}/");
+                _listener.Prefixes.Add($"http://localhost:{_port.Value}/");
                 _listener.Start();
                 _running = true;
 
@@ -68,7 +117,7 @@ namespace TFWRRemoteAPI
                 };
                 _listenerThread.Start();
 
-                Log.LogInfo($"HTTP API listening on http://localhost:{Port}/");
+                Log.LogInfo($"HTTP API listening on http://localhost:{_port.Value}/");
             }
             catch (Exception ex)
             {
@@ -87,7 +136,6 @@ namespace TFWRRemoteAPI
         {
             GameBridge.EnsureMainThread();
 
-            // Drain main-thread queue
             while (_mainThreadQueue.TryDequeue(out var action))
             {
                 try
@@ -100,57 +148,129 @@ namespace TFWRRemoteAPI
                 }
             }
 
-            // Check if a run has finished
-            if (_activeRunId != null && !_runFinished)
-            {
-                try
-                {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim != null)
-                    {
-                        bool finished;
-                        if (_runMode == "simulate")
-                        {
-                            finished = !mainSim.MightBeSimulating();
-                        }
-                        else
-                        {
-                            finished = !mainSim.IsExecuting();
-                        }
-                        if (finished)
-                        {
-                            _runFinished = true;
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            // Auto-dismiss leaderboard result screen after delay
             try
             {
                 var mainSim = MainSim.Inst;
-                if (mainSim != null && mainSim.leaderboardManager != null
-                    && mainSim.leaderboardManager.IsLeaderBoardScreenOpen)
+                if (mainSim != null)
                 {
-                    if (_leaderboardScreenOpenTime < 0f)
-                    {
-                        _leaderboardScreenOpenTime = Time.time;
-                        Log.LogInfo("Leaderboard screen detected, will auto-dismiss in 3s");
-                    }
-                    else if (Time.time - _leaderboardScreenOpenTime >= LeaderboardDismissDelay)
-                    {
-                        mainSim.leaderboardManager.OkPressed();
-                        _leaderboardScreenOpenTime = -1f;
-                        Log.LogInfo("Auto-dismissed leaderboard screen");
-                    }
-                }
-                else
-                {
-                    _leaderboardScreenOpenTime = -1f;
+                    TrackRun(mainSim);
+                    AutoDismiss(mainSim);
+                    CloseMenuWhenLoaded(mainSim);
+                    GameBridge.UpdateCamera(mainSim);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Log.LogError($"Update error: {ex}");
+            }
+        }
+
+        private void OnGUI()
+        {
+            try
+            {
+                Overlay.Draw();
+            }
+            catch (Exception ex)
+            {
+                // Never let a drawing problem spam every frame.
+                Overlay.Caption = null;
+                Overlay.ClearScoreboard();
+                Log.LogError($"Overlay disabled after error: {ex}");
+            }
+        }
+
+        /// <summary>Advance the run state machine: starting -> running -> finished | error.</summary>
+        private void TrackRun(MainSim mainSim)
+        {
+            string state, mode, errorText;
+            lock (RunState.Lock)
+            {
+                state = RunState.State;
+                mode = RunState.Mode;
+                errorText = RunState.ErrorText;
+            }
+
+            if (state == RunState.Starting)
+            {
+                // simulate/leaderboard modes are only *scheduled* by the request; MainSim.Update
+                // starts them on a later frame, so "not simulating yet" does not mean finished.
+                if (mainSim.MightBeSimulating())
+                {
+                    state = RunState.Running;
+                    SetState(state);
+                }
+                else if (++_startingFrames > 2 && !GameBridge.IsLeaderboardStartPending(mainSim))
+                {
+                    lock (RunState.Lock)
+                    {
+                        if (RunState.ErrorText == null)
+                            RunState.ErrorText = "The game did not start the run (the file may have failed to parse)";
+                    }
+                    EndRun(RunState.Error);
+                    return;
+                }
+            }
+
+            if (state != RunState.Running) return;
+
+            if (errorText != null)
+            {
+                // A runtime error pauses the simulation without ending the execution, so the
+                // game still reports "executing". Report it as a finished, failed run.
+                EndRun(RunState.Error);
+                return;
+            }
+
+            bool finished = mode == "execute" ? !mainSim.IsExecuting() : !mainSim.MightBeSimulating();
+            if (finished) EndRun(RunState.Finished);
+        }
+
+        private static void SetState(string state)
+        {
+            lock (RunState.Lock) { RunState.State = state; }
+        }
+
+        private void EndRun(string state)
+        {
+            SetState(state);
+            _dismissArmedUntil = Time.time + DismissGraceSeconds;
+        }
+
+        private void CloseMenuWhenLoaded(MainSim mainSim)
+        {
+            if (_closeMenuCountdown < 0) return;
+            // Menu.Start (which opens the title menu and loads the save) runs on the first
+            // frames of the new scene; give it time before closing the menu.
+            if (_closeMenuCountdown-- > 0) return;
+            if (GameBridge.IsMenuOpen(mainSim) && mainSim.menu != null)
+            {
+                mainSim.menu.Play();
+                Log.LogInfo("Closed the title menu after loading the save");
+            }
+        }
+
+        private void AutoDismiss(MainSim mainSim)
+        {
+            var lm = mainSim.leaderboardManager;
+            bool armed = _autoDismiss.Value && (RunState.IsActive || Time.time <= _dismissArmedUntil);
+            if (!armed || lm == null || !lm.IsLeaderBoardScreenOpen)
+            {
+                _leaderboardScreenOpenTime = -1f;
+                return;
+            }
+
+            if (_leaderboardScreenOpenTime < 0f)
+            {
+                _leaderboardScreenOpenTime = Time.time;
+                Log.LogInfo($"Leaderboard screen detected, will auto-dismiss in {_dismissDelay.Value}s");
+            }
+            else if (Time.time - _leaderboardScreenOpenTime >= _dismissDelay.Value)
+            {
+                _leaderboardScreenOpenTime = -1f;
+                if (GameBridge.DismissLeaderboardScreen(mainSim))
+                    Log.LogInfo("Auto-dismissed leaderboard screen");
+            }
         }
 
         // ── HTTP Listener Loop ──────────────────────────────────
@@ -164,100 +284,145 @@ namespace TFWRRemoteAPI
                     var ctx = _listener.GetContext();
                     ThreadPool.QueueUserWorkItem(_ => HandleRequest(ctx));
                 }
-                catch (HttpListenerException) when (!_running)
-                {
-                    break;
-                }
                 catch (Exception ex)
                 {
-                    if (_running) Log.LogError($"Listener error: {ex.Message}");
+                    if (!_running) break;
+                    Log.LogError($"Listener error: {ex.Message}");
+                    Thread.Sleep(250); // do not spin if the listener is broken
                 }
             }
         }
 
         private void HandleRequest(HttpListenerContext ctx)
         {
+            ApiResponse response;
             try
             {
-                var path = ctx.Request.Url.AbsolutePath.TrimEnd('/');
-                var method = ctx.Request.HttpMethod;
-
-                string responseJson;
-                switch (path)
-                {
-                    case "/status":
-                        responseJson = HandleStatus();
-                        break;
-                    case "/run-script":
-                        if (method != "POST")
-                        {
-                            responseJson = JsonError("POST required");
-                            break;
-                        }
-                        responseJson = HandleRunScript(ctx.Request);
-                        break;
-                    case "/poll":
-                        responseJson = HandlePoll();
-                        break;
-                    case "/output":
-                        responseJson = HandleOutput();
-                        break;
-                    case "/inventory":
-                        responseJson = HandleInventory();
-                        break;
-                    case "/stop":
-                        responseJson = HandleStop();
-                        break;
-                    case "/delete-script":
-                        if (method != "POST")
-                        {
-                            responseJson = JsonError("POST required");
-                            break;
-                        }
-                        responseJson = HandleDeleteScript(ctx.Request);
-                        break;
-                    case "/dismiss":
-                        responseJson = HandleDismiss();
-                        break;
-                    default:
-                        responseJson = JsonError($"Unknown endpoint: {path}");
-                        break;
-                }
-
-                SendResponse(ctx.Response, responseJson);
+                response = Route(ctx.Request);
+            }
+            catch (MiniJson.JsonException ex)
+            {
+                response = ApiResponse.Error(400, "Invalid JSON: " + ex.Message);
+            }
+            catch (ApiException ex)
+            {
+                response = ApiResponse.Error(ex.Status, ex.Message);
             }
             catch (Exception ex)
             {
-                try
-                {
-                    SendResponse(ctx.Response, JsonError(ex.Message), 500);
-                }
-                catch { }
+                Log.LogError($"Request error: {ex}");
+                response = ApiResponse.Error(500, ex.Message);
+            }
+
+            try
+            {
+                SendResponse(ctx.Response, response);
+            }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"Could not send response: {ex.Message}");
+                try { ctx.Response.Abort(); } catch { }
             }
         }
 
-        // ── Endpoint Handlers ───────��───────────────────────────
-
-        private string HandleStatus()
+        private ApiResponse Route(HttpListenerRequest request)
         {
-            string result = RunOnMainThreadSync(() =>
+            string path = request.Url.AbsolutePath.TrimEnd('/');
+            string method = request.HttpMethod;
+
+            switch (path)
             {
-                bool graphicsReady = IsGraphicsReady();
+                case "/status":
+                    return HandleStatus();
+                case "/run-script":
+                    if (method != "POST") return ApiResponse.Error(405, "POST required");
+                    return HandleRunScript(ReadBody(request));
+                case "/poll":
+                    return HandlePoll(ParseSince(request));
+                case "/output":
+                    return HandleOutput(ParseSince(request));
+                case "/inventory":
+                    return HandleInventory();
+                case "/stop":
+                    return HandleStop();
+                case "/delete-script":
+                    if (method != "POST") return ApiResponse.Error(405, "POST required");
+                    return HandleDeleteScript(ReadBody(request));
+                case "/dismiss":
+                    return HandleDismiss();
+                case "/saves":
+                    return HandleSaves();
+                case "/overlay":
+                    if (method != "POST") return ApiResponse.Error(405, "POST required");
+                    return HandleOverlay(ReadBody(request));
+                case "/camera":
+                    if (method != "POST") return HandleCameraGet();
+                    return HandleCamera(ReadBody(request));
+                case "/screenshot":
+                    return HandleScreenshot();
+                case "/load-save":
+                    if (method != "POST") return ApiResponse.Error(405, "POST required");
+                    return HandleLoadSave(ReadBody(request));
+                default:
+                    return ApiResponse.Error(404, $"Unknown endpoint: {path}");
+            }
+        }
+
+        private static string ReadBody(HttpListenerRequest request)
+        {
+            // Always UTF-8: without a charset in Content-Type, ContentEncoding falls back to
+            // the system code page and mangles non-ASCII script text.
+            using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
+        /// <summary>Returns the ?since= byte offset, or -1 when it was not given.</summary>
+        private static long ParseSince(HttpListenerRequest request)
+        {
+            string raw = request.QueryString["since"];
+            if (string.IsNullOrEmpty(raw)) return -1;
+            long since;
+            if (!long.TryParse(raw, out since) || since < 0)
+                throw new ApiException(400, "'since' must be a non-negative integer byte offset");
+            return since;
+        }
+
+        // ── Endpoint Handlers ───────────────────────────────────
+
+        private ApiResponse HandleStatus()
+        {
+            return RunOnMainThreadSync(() =>
+            {
+                var writer = new MiniJson.ObjectWriter();
                 var mainSim = MainSim.Inst;
-                if (mainSim == null)
+                writer.Bool("ready", mainSim != null);
+                writer.Bool("graphics_ready", IsGraphicsReady());
+                if (mainSim != null)
                 {
-                    return $"{{\"ready\":false,\"graphics_ready\":{Bool(graphicsReady)}}}";
+                    writer.Bool("executing", mainSim.IsExecuting());
+                    writer.Bool("simulating", mainSim.MightBeSimulating());
+                    writer.Bool("menu_open", GameBridge.IsMenuOpen(mainSim));
                 }
-
-                bool executing = mainSim.IsExecuting();
-                bool simulating = mainSim.MightBeSimulating();
-                string activeRun = _activeRunId ?? "";
-                bool runDone = _runFinished;
-
-                return $"{{\"ready\":true,\"graphics_ready\":{Bool(graphicsReady)},\"executing\":{Bool(executing)},\"simulating\":{Bool(simulating)},"
-                     + $"\"active_run_id\":\"{Escape(activeRun)}\",\"run_finished\":{Bool(runDone)}}}";
+                writer.Str("active_save", GameBridge.GetActiveSaveName());
+                lock (RunState.Lock)
+                {
+                    writer.Str("active_run_id", RunState.RunId ?? "");
+                    writer.Str("state", RunState.State);
+                    writer.Bool("run_finished", IsTerminal(RunState.State));
+                }
+                writer.Str("plugin_version", PluginVersion);
+                writer.Str("game_version", _gameVersion);
+                writer.Str("unity_version", _unityVersion);
+                writer.StrArray("compat_warnings", Compat.Warnings);
+                return ApiResponse.Ok(writer.ToString());
             });
-            return result;
+        }
+
+        private static bool IsTerminal(string state)
+        {
+            return state == RunState.Finished || state == RunState.Stopped || state == RunState.Error;
         }
 
         /// <summary>
@@ -270,10 +435,7 @@ namespace TFWRRemoteAPI
             {
                 if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
                     return false;
-                string name = SystemInfo.graphicsDeviceName;
-                if (string.IsNullOrEmpty(name))
-                    return false;
-                return true;
+                return !string.IsNullOrEmpty(SystemInfo.graphicsDeviceName);
             }
             catch
             {
@@ -281,499 +443,691 @@ namespace TFWRRemoteAPI
             }
         }
 
-        private string HandleRunScript(HttpListenerRequest request)
+        private ApiResponse HandleRunScript(string body)
         {
-            string body;
-            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
-            {
-                body = reader.ReadToEnd();
-            }
+            var req = MiniJson.ParseObject(body);
 
-            // Simple JSON parsing (no external deps in .NET 4.6 BepInEx)
-            var code = ExtractJsonString(body, "code");
-            var filename = ExtractJsonString(body, "filename") ?? "claude_diag";
-            var mode = ExtractJsonString(body, "mode") ?? "execute";
-            var seedStr = ExtractJsonString(body, "seed");
-            int seed = -1;
-            if (seedStr != null) int.TryParse(seedStr, out seed);
+            string code = MiniJson.GetString(req, "code");
+            string filename = MiniJson.GetString(req, "filename") ?? "claude_diag";
+            if (filename.EndsWith(".py", StringComparison.OrdinalIgnoreCase))
+                filename = filename.Substring(0, filename.Length - 3);
+            string mode = (MiniJson.GetString(req, "mode") ?? "execute").ToLowerInvariant();
+            bool openEditor = MiniJson.GetBool(req, "open_editor", true);
+            int seed = (int)MiniJson.GetNumber(req, "seed", -1);
+            double speedup = MiniJson.GetNumber(req, "speedup", 1);
 
-            if (string.IsNullOrEmpty(code))
-                return JsonError("'code' field is required");
-
-            // Default true: Parser.Parse is reliable with a real code window. GET /status graphics_ready
-            // and the run-script guard ensure the GPU is up before OpenCodeFile/TMP run under Proton.
-            bool openEditor = ExtractJsonBool(body, "open_editor", true);
+            if (filename.Length == 0)
+                return ApiResponse.Error(400, "'filename' must not be empty");
+            if (mode != "execute" && mode != "simulate" && mode != "leaderboard")
+                return ApiResponse.Error(400, $"Unknown mode '{mode}'. Use \"execute\", \"simulate\" or \"leaderboard\".");
+            if (mode == "execute" && string.IsNullOrEmpty(code))
+                return ApiResponse.Error(400, "'code' field is required");
 
             string runId = Guid.NewGuid().ToString("N").Substring(0, 8);
 
-            string result = RunOnMainThreadSync(() =>
+            return RunOnMainThreadSync(() =>
             {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
+                if (!IsGraphicsReady())
+                    return ApiResponse.Error(503, "Graphics device not ready; poll GET /status until graphics_ready is true before run-script.");
+
+                // Everything that can be rejected is checked before the game is touched, so a
+                // bad request leaves a running script alone. (A parse error is the exception:
+                // parsing needs the code in a window, which replaces what was running.)
+                MainSim.LeaderboardStartArgs startArgs = null;
+                if (mode == "simulate")
+                {
+                    object unlocksValue;
+                    req.TryGetValue("unlocks", out unlocksValue);
+                    startArgs = new MainSim.LeaderboardStartArgs(
+                        filename,
+                        GameBridge.ParseUnlocks(unlocksValue),
+                        GameBridge.ParseItems(MiniJson.GetObject(req, "items")),
+                        GameBridge.ParseGlobals(MiniJson.GetObject(req, "globals")),
+                        "",  // leaderboardName
+                        "",  // steamLeaderboardName
+                        LeaderboardType.simulation,
+                        true,  // fullyGenerateUnderground, as the simulate() builtin passes
+                        Platforms.EDlcType.None,
+                        seed);
+                }
+                else if (mode == "leaderboard")
+                {
+                    var lb = GameBridge.FindLeaderboard(MiniJson.GetString(req, "leaderboard"));
+                    string requiredUnlock = lb.dlc == Platforms.EDlcType.Mining ? "underground_leaderboard" : "leaderboard";
+                    if (!mainSim.IsUnlocked(requiredUnlock))
+                        return ApiResponse.Error(409, $"The '{requiredUnlock}' unlock is required to run this leaderboard (same rule as leaderboard_run()).");
+
+                    startArgs = new MainSim.LeaderboardStartArgs(
+                        filename,
+                        GameBridge.LeaderboardUnlocks(lb),
+                        new ItemBlock(lb.startItems),
+                        new List<KeyValuePair<string, IPyObject>>(),
+                        lb.leaderboardName,
+                        lb.steamLeaderboardName,
+                        lb.leaderboardType,
+                        lb.fullyGenerateUnderground,
+                        lb.dlc,
+                        -1,
+                        lb.singleDrone,
+                        lb.whitelistedGroundFeatureUnlocks,
+                        lb.pretendedFeatureChunks,
+                        lb.pretendedChunkDepths);
+                }
+
+                if (code == null && !mainSim.workspace.codeWindows.ContainsKey(filename))
+                    return ApiResponse.Error(400, $"No 'code' given and no file named '{filename}' is open in the game");
+
+                GameBridge.StopEverything(mainSim);
+                if (RunState.IsActive) EndRun(RunState.Stopped);
+
+                if (code != null)
+                    File.WriteAllText(Path.Combine(GameBridge.GetActiveSavePath(), filename + ".py"), code);
+
+                // simulate/leaderboard always need the file's own window: the game looks the
+                // file up by window name when it starts the run.
+                CodeWindow window = null;
+                CodeWindow scratch = null;
+                if (openEditor || mode != "execute")
+                {
+                    window = GameBridge.EnsureCodeWindow(mainSim, filename, code);
+                    if (window == null)
+                        return ApiResponse.Error(500, $"Could not open a code window for '{filename}' (see BepInEx/LogOutput.log)");
+                }
+                else
+                {
+                    foreach (var kv in mainSim.workspace.codeWindows)
+                    {
+                        scratch = kv.Value;
+                        break;
+                    }
+                    if (scratch == null)
+                        scratch = GameBridge.EnsureCodeWindow(mainSim, "__api_scratch", "# api scratch\n");
+                    if (scratch == null)
+                        return ApiResponse.Error(500, "open_editor=false needs some CodeWindow for parsing and none could be created");
+                }
+
+                mainSim.Logger.Clear();
+
+                Node node;
+                if (window != null)
+                {
+                    string parseError;
+                    int line;
+                    node = GameBridge.ParseWindow(window, out parseError, out line);
+                    if (node == null)
+                    {
+                        var err = new MiniJson.ObjectWriter().Str("error", parseError);
+                        if (line > 0) err.Num("line", line);
+                        return new ApiResponse { Status = 400, Json = err.ToString() };
+                    }
+                }
+                else
+                {
+                    string parseError;
+                    node = GameBridge.ParseCodeDirect(code, scratch, out parseError);
+                    if (node == null)
+                        return ApiResponse.Error(400, parseError);
+                }
+
+                _dismissArmedUntil = float.PositiveInfinity;
+                _startingFrames = 0;
                 try
                 {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim == null)
-                        return JsonError("MainSim not ready");
-
-                    // Stop any existing execution
-                    if (mainSim.IsExecuting())
-                        mainSim.StopMainExecution();
-                    if (mainSim.MightBeSimulating())
-                        mainSim.RestoreMainSim();
-
-                    // Write code to save file
-                    string savePath = GameBridge.GetActiveSavePath();
-                    string filePath = Path.Combine(savePath, filename + ".py");
-                    File.WriteAllText(filePath, code);
-
-                    // Sync workspace from files on disk
-                    Saver.ApplyCodeChanges(mainSim.workspace);
-
-                    if (!IsGraphicsReady())
-                        return JsonError("Graphics device not ready; poll GET /status until graphics_ready is true before run-script.");
-
-                    CodeWindow scratchForParse = null;
-
-                    if (openEditor)
+                    if (mode == "execute")
                     {
-                        if (mainSim.workspace.codeWindows.TryGetValue(filename, out var existingCw))
-                        {
-                            GameBridge.ReactivateCodeWindow(existingCw, code);
-                        }
-                        else
-                        {
-                            try
-                            {
-                                GameBridge.OpenCodeFile(mainSim, filename, code);
-                            }
-                            catch (Exception openEx)
-                            {
-                                Log.LogWarning($"OpenCodeFile failed for '{filename}': {openEx.Message}");
-                            }
-                            if (mainSim.workspace.codeWindows.TryGetValue(filename, out var newCw))
-                            {
-                                newCw.CodeInput.text = code;
-                            }
-                            else
-                            {
-                                Log.LogWarning($"Code window not available for '{filename}', will use direct parse for execution");
-                            }
-                        }
+                        RunState.Begin(runId, mode, RunState.Running);
+                        mainSim.StartMainExecution(window, node);
                     }
                     else
                     {
-                        Log.LogInfo($"open_editor=false: UI hidden for '{filename}'; reusing any CodeWindow for Parser.Parse (Core requires CodeWindow)");
-                        foreach (var kv in mainSim.workspace.codeWindows)
-                        {
-                            scratchForParse = kv.Value;
-                            break;
-                        }
-                        if (scratchForParse == null)
-                        {
-                            try
-                            {
-                                GameBridge.OpenCodeFile(mainSim, "__api_scratch", "# api scratch\n");
-                            }
-                            catch (Exception openEx)
-                            {
-                                return JsonError($"open_editor=false needs a CodeWindow for parsing; could not create scratch: {openEx.Message}");
-                            }
-                            if (!mainSim.workspace.codeWindows.TryGetValue("__api_scratch", out scratchForParse)
-                                || scratchForParse == null)
-                            {
-                                return JsonError("open_editor=false: scratch CodeWindow missing after OpenCodeFile");
-                            }
-                        }
+                        RunState.Begin(runId, mode, RunState.Starting);
+                        mainSim.ScheduleLeaderboardStart(startArgs);
+                        mainSim.TimeFactor = speedup;
                     }
-
-                    // Clear output
-                    global::Logger.Clear();
-
-                    _activeRunId = runId;
-                    _runFinished = false;
-                    _runMode = mode;
-
-                    if (mode == "simulate")
-                    {
-                        var unlockList = GameBridge.ParseUnlocks(body);
-                        var items = GameBridge.ParseItems(body);
-
-                        var args = new MainSim.LeaderboardStartArgs(
-                            filename,
-                            unlockList,
-                            items,
-                            new List<KeyValuePair<string, IPyObject>>(),
-                            "",  // leaderboardName
-                            "",  // steamLeaderboardName
-                            LeaderboardType.simulation,
-                            seed
-                        );
-                        Log.LogInfo($"Scheduling leaderboard start for '{filename}' with {unlockList.Count} unlocks, seed={seed}");
-                        Log.LogInfo($"Items: cactus={items.items[4]}, power={items.items[10]}");
-                        mainSim.ScheduleLeaderboardStart(args);
-                        Log.LogInfo("ScheduleLeaderboardStart called successfully");
-                    }
-                    else
-                    {
-                        // Direct execution: Parser.Parse requires a CodeWindow instance in Core.dll.
-                        if (openEditor && mainSim.workspace.codeWindows.TryGetValue(filename, out var codeWindow))
-                        {
-                            var node = codeWindow.Parse();
-                            if (node != null)
-                            {
-                                mainSim.StartMainExecution(codeWindow, node);
-                            }
-                            else
-                            {
-                                return JsonError("Parse error in script");
-                            }
-                        }
-                        else
-                        {
-                            var parseCw = scratchForParse;
-                            if (parseCw == null && mainSim.workspace.codeWindows.TryGetValue(filename, out var namedCw))
-                                parseCw = namedCw;
-                            if (parseCw == null)
-                                return JsonError("No CodeWindow available for parse (open_editor=false with empty workspace?)");
-
-                            var node = GameBridge.ParseCodeDirect(code, parseCw);
-                            if (node != null)
-                            {
-                                mainSim.StartMainExecution(null, node);
-                                Log.LogInfo($"Executing '{filename}' via direct parse (scratch CodeWindow)");
-                            }
-                            else
-                            {
-                                return JsonError("Parse error in script (direct parse)");
-                            }
-                        }
-                    }
-
-                    return $"{{\"started\":true,\"run_id\":\"{runId}\",\"mode\":\"{Escape(mode)}\",\"open_editor\":{Bool(openEditor)}}}";
                 }
-                catch (Exception ex)
+                catch
                 {
-                    return JsonError($"Run failed: {ex.Message}\n{ex.StackTrace}");
+                    EndRun(RunState.Error);
+                    throw;
                 }
-            });
+                Log.LogInfo($"Started run {runId}: mode={mode} file='{filename}'");
 
-            return result;
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("started", true)
+                    .Str("run_id", runId)
+                    .Str("mode", mode)
+                    .Str("filename", filename)
+                    .Bool("open_editor", window != null)
+                    .ToString());
+            });
         }
 
-        private string HandlePoll()
+        private ApiResponse HandlePoll(long since)
         {
-            string result = RunOnMainThreadSync(() =>
+            var response = RunOnMainThreadSync(() =>
             {
-                try
+                var writer = new MiniJson.ObjectWriter();
+                AppendRunState(writer);
+
+                var mainSim = MainSim.Inst;
+                double timeSeconds = 0;
+                string itemsJson = "{}";
+                int runsSoFar = 0;
+                if (mainSim != null)
                 {
-                    string runId = _activeRunId ?? "";
-                    bool finished = _runFinished;
-                    string output = global::Logger.GetOutputString() ?? "";
-
-                    var mainSim = MainSim.Inst;
-                    double timeSeconds = 0;
-                    string itemsJson = "{}";
-
-                    if (mainSim != null)
-                    {
-                        // Try to read sim time from current or stored sim
-                        var sim = GameBridge.GetActiveSim(mainSim);
-                        if (sim != null)
-                        {
-                            timeSeconds = sim.CurrentTime.Seconds;
-                            itemsJson = GameBridge.GetInventoryJson(sim);
-                        }
-                    }
-
-                    return $"{{\"run_id\":\"{Escape(runId)}\",\"finished\":{Bool(finished)},"
-                         + $"\"time_seconds\":{timeSeconds:F6},"
-                         + $"\"output\":\"{Escape(output)}\","
-                         + $"\"items\":{itemsJson}}}";
-                }
-                catch (Exception ex)
-                {
-                    return JsonError($"Poll error: {ex.Message}");
-                }
-            });
-            return result;
-        }
-
-        private string HandleOutput()
-        {
-            string result = RunOnMainThreadSync(() =>
-            {
-                string output = global::Logger.GetOutputString() ?? "";
-                return $"{{\"output\":\"{Escape(output)}\"}}";
-            });
-            return result;
-        }
-
-        private string HandleInventory()
-        {
-            string result = RunOnMainThreadSync(() =>
-            {
-                try
-                {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim == null)
-                        return JsonError("MainSim not ready");
-
+                    runsSoFar = mainSim.numLeaderboardRuns;
                     var sim = GameBridge.GetActiveSim(mainSim);
-                    if (sim == null)
-                        return JsonError("No active simulation");
-
-                    return $"{{\"items\":{GameBridge.GetInventoryJson(sim)}}}";
+                    if (sim != null)
+                    {
+                        timeSeconds = sim.CurrentTime.Seconds;
+                        itemsJson = GameBridge.GetInventoryJson(sim);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    return JsonError($"Inventory error: {ex.Message}");
-                }
+                writer.Num("time_seconds", timeSeconds);
+                writer.Num("leaderboard_runs_so_far", runsSoFar);
+                writer.Num("leaderboard_total_time_seconds", mainSim != null ? mainSim.totalLeaderboardTime.Seconds : 0);
+                writer.Raw("items", itemsJson);
+                return ApiResponse.Ok(writer.ToString());
             });
-            return result;
+            if (response.Status != 200) return response;
+
+            // Output is read on the HTTP thread; splice it into the object built above.
+            var output = new MiniJson.ObjectWriter();
+            AppendOutput(output, since);
+            string head = response.Json.Substring(0, response.Json.Length - 1);
+            string tail = output.ToString().Substring(1);
+            return ApiResponse.Ok(head + "," + tail);
         }
 
-        private string HandleStop()
+        private static void AppendRunState(MiniJson.ObjectWriter writer)
         {
-            string result = RunOnMainThreadSync(() =>
+            lock (RunState.Lock)
             {
-                try
+                writer.Str("run_id", RunState.RunId ?? "");
+                writer.Str("mode", RunState.Mode ?? "");
+                writer.Str("state", RunState.State);
+                writer.Bool("finished", IsTerminal(RunState.State));
+                writer.Str("error", RunState.ErrorText);
+                if (RunState.SimTimeSeconds.HasValue)
+                    writer.Num("sim_time_seconds", RunState.SimTimeSeconds.Value);
+                else
+                    writer.Raw("sim_time_seconds", "null");
+                writer.NumArray("run_times", RunState.RunTimes);
+                if (RunState.HasLeaderboardResult)
                 {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim == null)
-                        return JsonError("MainSim not ready");
-
-                    if (mainSim.MightBeSimulating())
-                        mainSim.RestoreMainSim();
-                    if (mainSim.IsExecuting())
-                        mainSim.StopMainExecution();
-
-                    _activeRunId = null;
-                    _runFinished = true;
-                    return "{\"stopped\":true}";
+                    writer.Raw("leaderboard", new MiniJson.ObjectWriter()
+                        .Str("name", RunState.LeaderboardName)
+                        .Bool("completed", RunState.LeaderboardCompleted)
+                        .Num("average_time_seconds", RunState.LeaderboardAverageSeconds)
+                        .Num("runs", RunState.LeaderboardRuns)
+                        .ToString());
                 }
-                catch (Exception ex)
+                else
                 {
-                    return JsonError($"Stop error: {ex.Message}");
+                    writer.Raw("leaderboard", "null");
                 }
-            });
-            return result;
+            }
         }
 
-        private string HandleDismiss()
+        private ApiResponse HandleOutput(long since)
         {
-            string result = RunOnMainThreadSync(() =>
-            {
-                try
-                {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim == null)
-                        return JsonError("MainSim not ready");
-
-                    bool dismissed = GameBridge.DismissLeaderboardScreen(mainSim);
-                    return $"{{\"dismissed\":{Bool(dismissed)}}}";
-                }
-                catch (Exception ex)
-                {
-                    return JsonError($"Dismiss error: {ex.Message}");
-                }
-            });
-            return result;
+            var writer = new MiniJson.ObjectWriter();
+            AppendOutput(writer, since);
+            return ApiResponse.Ok(writer.ToString());
         }
 
-        private string HandleDeleteScript(HttpListenerRequest request)
+        /// <summary>
+        /// Adds "output", "next_offset", "output_source" and "output_truncated".
+        ///
+        /// The game's in-memory log keeps only the last ~100 messages, which silently drops
+        /// lines on long runs, so output is read from the game's own output.txt (complete since
+        /// the last run started). <paramref name="since"/> is a byte offset from a previous
+        /// "next_offset"; -1 means everything.
+        /// </summary>
+        private void AppendOutput(MiniJson.ObjectWriter writer, long since)
         {
-            string body;
-            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            try
             {
-                body = reader.ReadToEnd();
+                if (File.Exists(_outputPath))
+                {
+                    using (var fs = new FileStream(_outputPath, FileMode.Open, FileAccess.Read,
+                               FileShare.ReadWrite | FileShare.Delete))
+                    {
+                        long length = fs.Length;
+                        bool truncated = false;
+                        long start = since;
+                        if (start < 0)
+                        {
+                            start = 0;
+                            if (length > MaxFullOutputBytes)
+                            {
+                                start = length - MaxFullOutputBytes;
+                                truncated = true;
+                            }
+                        }
+                        else if (start > length)
+                        {
+                            // The file was cleared by a new run since the caller's offset.
+                            start = 0;
+                        }
+
+                        fs.Seek(start, SeekOrigin.Begin);
+                        var buffer = new byte[length - start];
+                        int read = 0;
+                        while (read < buffer.Length)
+                        {
+                            int n = fs.Read(buffer, read, buffer.Length - read);
+                            if (n <= 0) break;
+                            read += n;
+                        }
+
+                        string text = Encoding.UTF8.GetString(buffer, 0, read).Replace("\r\n", "\n");
+                        writer.Str("output", text);
+                        writer.Num("next_offset", start + read);
+                        writer.Str("output_source", "file");
+                        writer.Bool("output_truncated", truncated);
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"Could not read {_outputPath}: {ex.Message}");
             }
 
-            var filename = ExtractJsonString(body, "filename");
-            if (string.IsNullOrEmpty(filename))
-                return JsonError("'filename' field is required");
+            // Fallback: the in-memory buffer (last ~100 messages only; offsets do not apply).
+            string memory = "";
+            try { memory = MainSim.Inst?.Logger?.GetOutputString() ?? ""; } catch { }
+            writer.Str("output", memory);
+            writer.Num("next_offset", 0);
+            writer.Str("output_source", "memory");
+            writer.Bool("output_truncated", true);
+        }
 
-            string result = RunOnMainThreadSync(() =>
+        private ApiResponse HandleInventory()
+        {
+            return RunOnMainThreadSync(() =>
             {
-                try
-                {
-                    var mainSim = MainSim.Inst;
-                    if (mainSim == null)
-                        return JsonError("MainSim not ready");
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
 
-                    string savePath = GameBridge.GetActiveSavePath();
-                    string filePath = Path.Combine(savePath, filename + ".py");
+                var sim = GameBridge.GetActiveSim(mainSim);
+                if (sim == null)
+                    return ApiResponse.Error(503, "No active simulation");
 
-                    bool fileDeleted = false;
-                    bool windowClosed = false;
-
-                    if (File.Exists(filePath))
-                    {
-                        File.Delete(filePath);
-                        fileDeleted = true;
-                        Log.LogInfo($"Deleted file: {filePath}");
-                    }
-
-                    // Hide the code window (keeps it in the dict for potential reuse)
-                    if (mainSim.workspace.codeWindows.TryGetValue(filename, out var cw))
-                    {
-                        GameBridge.CloseCodeWindow(mainSim, filename, cw);
-                        windowClosed = true;
-                    }
-
-                    return $"{{\"deleted\":true,\"filename\":\"{Escape(filename)}\","
-                         + $"\"file_deleted\":{Bool(fileDeleted)},\"window_closed\":{Bool(windowClosed)}}}";
-                }
-                catch (Exception ex)
-                {
-                    return JsonError($"Delete failed: {ex.Message}");
-                }
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Raw("items", GameBridge.GetInventoryJson(sim))
+                    .ToString());
             });
-            return result;
+        }
+
+        private ApiResponse HandleStop()
+        {
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
+
+                bool wasRunning = mainSim.IsExecuting() || mainSim.MightBeSimulating();
+                GameBridge.StopEverything(mainSim);
+                if (RunState.IsActive) EndRun(RunState.Stopped);
+
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("stopped", true)
+                    .Bool("was_running", wasRunning)
+                    .ToString());
+            });
+        }
+
+        private ApiResponse HandleDismiss()
+        {
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
+
+                bool dismissed = GameBridge.DismissLeaderboardScreen(mainSim);
+                return ApiResponse.Ok(new MiniJson.ObjectWriter().Bool("dismissed", dismissed).ToString());
+            });
+        }
+
+        private static Dictionary<string, object> ParseOptionalBody(string body)
+        {
+            return string.IsNullOrEmpty(body) || body.Trim().Length == 0
+                ? new Dictionary<string, object>()
+                : MiniJson.ParseObject(body);
+        }
+
+        private ApiResponse HandleOverlay(string body)
+        {
+            var req = ParseOptionalBody(body);
+            return RunOnMainThreadSync(() =>
+            {
+                if (MiniJson.GetBool(req, "clear", false))
+                {
+                    Overlay.Caption = null;
+                    Overlay.ClearScoreboard();
+                }
+
+                // "caption": text shown in a strip at the bottom; "" or null removes it.
+                object captionValue;
+                if (req.TryGetValue("caption", out captionValue))
+                {
+                    Overlay.Caption = captionValue as string;
+                    double seconds = MiniJson.GetNumber(req, "caption_seconds", 0);
+                    Overlay.CaptionUntil = seconds > 0 ? Time.unscaledTime + (float)seconds : 0f;
+                }
+
+                // "scoreboard": panel at the top right; null removes it. Given keys replace
+                // the stored values, so a status-only update keeps the rest.
+                object boardValue;
+                if (req.TryGetValue("scoreboard", out boardValue))
+                {
+                    var board = boardValue as Dictionary<string, object>;
+                    if (board == null)
+                    {
+                        Overlay.ClearScoreboard();
+                    }
+                    else
+                    {
+                        if (board.ContainsKey("title")) Overlay.Title = MiniJson.GetString(board, "title");
+                        if (Overlay.Title == null) Overlay.Title = "";
+                        if (board.ContainsKey("subtitle")) Overlay.Subtitle = MiniJson.GetString(board, "subtitle");
+                        if (board.ContainsKey("status")) Overlay.Status = MiniJson.GetString(board, "status");
+                        if (board.ContainsKey("best_label")) Overlay.BestLabel = MiniJson.GetString(board, "best_label");
+                        if (board.ContainsKey("best_seconds"))
+                        {
+                            double best = MiniJson.GetNumber(board, "best_seconds", -1);
+                            Overlay.BestSeconds = best > 0 ? best : (double?)null;
+                        }
+                        object historyValue;
+                        if (board.TryGetValue("history", out historyValue))
+                        {
+                            Overlay.History.Clear();
+                            var list = historyValue as List<object>;
+                            if (list != null)
+                                foreach (var entry in list)
+                                    if (entry is double) Overlay.History.Add((double)entry);
+                        }
+                    }
+                }
+
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("caption_visible", !string.IsNullOrEmpty(Overlay.Caption)
+                        && (Overlay.CaptionUntil <= 0f || Time.unscaledTime <= Overlay.CaptionUntil))
+                    .Bool("scoreboard_visible", Overlay.Title != null)
+                    .ToString());
+            });
+        }
+
+        private ApiResponse HandleCameraGet()
+        {
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null) return ApiResponse.Error(503, "MainSim not ready");
+                var writer = new MiniJson.ObjectWriter()
+                    .Num("zoom", GameBridge.GetZoom(mainSim))
+                    .Num("world_size", mainSim.GetWorldSize().x)
+                    .Num("screen_width", Screen.width)
+                    .Num("screen_height", Screen.height);
+                Rect farm;
+                if (GameBridge.TryGetFarmScreenRect(mainSim, out farm))
+                {
+                    // Where the farm currently is, as fractions of the screen (origin bottom-left).
+                    writer.Raw("farm_rect", new MiniJson.ObjectWriter()
+                        .Num("x", Math.Round(farm.x / Screen.width, 3))
+                        .Num("y", Math.Round(farm.y / Screen.height, 3))
+                        .Num("width", Math.Round(farm.width / Screen.width, 3))
+                        .Num("height", Math.Round(farm.height / Screen.height, 3))
+                        .ToString());
+                }
+                return ApiResponse.Ok(writer.ToString());
+            });
+        }
+
+        private ApiResponse HandleCamera(string body)
+        {
+            var req = ParseOptionalBody(body);
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null) return ApiResponse.Error(503, "MainSim not ready");
+
+                if (MiniJson.GetBool(req, "release", false))
+                {
+                    bool released = GameBridge.ReleaseCamera();
+                    return ApiResponse.Ok(new MiniJson.ObjectWriter().Bool("released", released).ToString());
+                }
+
+                bool fit = MiniJson.GetBool(req, "fit", false);
+                bool center = MiniJson.GetBool(req, "center", false);
+                float? zoom = null;
+                if (req.ContainsKey("zoom")) zoom = (float)MiniJson.GetNumber(req, "zoom", 1);
+                if (!fit && !center && !zoom.HasValue)
+                    return ApiResponse.Error(400, "Give at least one of \"fit\": true, \"center\": true, \"zoom\": <number> or \"release\": true");
+
+                // Region the farm should occupy, as screen fractions with the origin at the
+                // bottom-left. The default leaves room for the scoreboard (right) and captions (bottom).
+                var region = new Rect(0.03f, 0.16f, 0.72f, 0.80f);
+                var regionValue = MiniJson.GetObject(req, "region");
+                if (regionValue != null)
+                {
+                    region = new Rect(
+                        (float)MiniJson.GetNumber(regionValue, "x", region.x),
+                        (float)MiniJson.GetNumber(regionValue, "y", region.y),
+                        (float)MiniJson.GetNumber(regionValue, "width", region.width),
+                        (float)MiniJson.GetNumber(regionValue, "height", region.height));
+                    if (region.width <= 0.05f || region.height <= 0.05f)
+                        return ApiResponse.Error(400, "'region' width and height must be fractions of the screen larger than 0.05");
+                }
+                float seconds = (float)MiniJson.GetNumber(req, "seconds", 1.0);
+
+                GameBridge.StartCameraMove(mainSim, zoom, fit, center, region, seconds);
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("moving", true)
+                    .Bool("fit", fit && !zoom.HasValue)
+                    .Bool("center", center || fit)
+                    .Num("seconds", seconds)
+                    .ToString());
+            });
+        }
+
+        private ApiResponse HandleScreenshot()
+        {
+            return RunOnMainThreadSync(() =>
+            {
+                // Written by Unity at the end of the current frame.
+                string path = Path.Combine(Application.persistentDataPath, "api_screenshot.png");
+                ScreenCapture.CaptureScreenshot(path);
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Str("path", path)
+                    .Num("width", Screen.width)
+                    .Num("height", Screen.height)
+                    .ToString());
+            });
+        }
+
+        private ApiResponse HandleSaves()
+        {
+            return RunOnMainThreadSync(() => ApiResponse.Ok(new MiniJson.ObjectWriter()
+                .Str("active_save", GameBridge.GetActiveSaveName())
+                .StrArray("saves", GameBridge.ListSaves())
+                .ToString()));
+        }
+
+        private ApiResponse HandleLoadSave(string body)
+        {
+            var req = string.IsNullOrEmpty(body) || body.Trim().Length == 0
+                ? new Dictionary<string, object>()
+                : MiniJson.ParseObject(body);
+            string save = MiniJson.GetString(req, "save");
+            bool closeMenu = MiniJson.GetBool(req, "close_menu", true);
+            bool discardUnsaved = MiniJson.GetBool(req, "discard_unsaved", false);
+
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
+
+                string active = GameBridge.GetActiveSaveName();
+                if (string.IsNullOrEmpty(save)) save = active;
+
+                bool reload = save != active;
+                if (reload)
+                {
+                    var saves = GameBridge.ListSaves();
+                    if (!saves.Contains(save))
+                        return ApiResponse.Error(404, $"No save named '{save}'. Saves: {string.Join(", ", saves)}");
+                    if (mainSim.dirty && !discardUnsaved)
+                        return ApiResponse.Error(409, $"The current save '{active}' has unsaved changes. Save in the game first, or pass \"discard_unsaved\": true.");
+
+                    // Same steps as picking a save in the game's menu without saving first.
+                    GameBridge.StopEverything(mainSim);
+                    if (RunState.IsActive) EndRun(RunState.Stopped);
+                    Saver.StopFileWatcher();
+                    OptionHolder.SetOption("activeSave", save);
+                    SceneManager.LoadScene(0);
+                    Log.LogInfo($"Loading save '{save}'");
+                }
+
+                // After a reload the scene needs a moment before the menu can be closed.
+                if (closeMenu) _closeMenuCountdown = reload ? 30 : 0;
+
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("loading", reload)
+                    .Str("save", save)
+                    .Bool("close_menu", closeMenu)
+                    .ToString());
+            });
+        }
+
+        private ApiResponse HandleDeleteScript(string body)
+        {
+            var req = MiniJson.ParseObject(body);
+            string filename = MiniJson.GetString(req, "filename");
+            if (string.IsNullOrEmpty(filename))
+                return ApiResponse.Error(400, "'filename' field is required");
+            if (filename.EndsWith(".py", StringComparison.OrdinalIgnoreCase))
+                filename = filename.Substring(0, filename.Length - 3);
+
+            return RunOnMainThreadSync(() =>
+            {
+                var mainSim = MainSim.Inst;
+                if (mainSim == null)
+                    return ApiResponse.Error(503, "MainSim not ready");
+
+                bool stopped = false;
+                bool windowClosed = false;
+                CodeWindow cw;
+                if (mainSim.workspace.codeWindows.TryGetValue(filename, out cw) && cw != null)
+                {
+                    // Closing the window that is executing would pull the code out from under
+                    // the run, so end the run first.
+                    if (cw.isExecuting && (mainSim.IsExecuting() || mainSim.MightBeSimulating()))
+                    {
+                        GameBridge.StopEverything(mainSim);
+                        if (RunState.IsActive) EndRun(RunState.Stopped);
+                        stopped = true;
+                    }
+                    windowClosed = GameBridge.CloseCodeWindow(filename, cw);
+                }
+
+                bool fileDeleted = false;
+                string filePath = Path.Combine(GameBridge.GetActiveSavePath(), filename + ".py");
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                    fileDeleted = true;
+                }
+
+                return ApiResponse.Ok(new MiniJson.ObjectWriter()
+                    .Bool("deleted", fileDeleted || windowClosed)
+                    .Str("filename", filename)
+                    .Bool("file_deleted", fileDeleted)
+                    .Bool("window_closed", windowClosed)
+                    .Bool("stopped_run", stopped)
+                    .ToString());
+            });
         }
 
         // ── Main Thread Sync ────────────────────────────────────
 
-        private string RunOnMainThreadSync(Func<string> func, int timeoutMs = 10000)
+        private sealed class PendingCall
         {
-            int mainId = GameBridge.MainThreadId;
-            if (mainId != 0 && Thread.CurrentThread.ManagedThreadId == mainId)
-            {
-                return func();
-            }
-
-            string callId = Guid.NewGuid().ToString("N");
-            var evt = new ManualResetEventSlim(false);
-            _pendingEvents[callId] = evt;
-
-            _mainThreadQueue.Enqueue(() =>
-            {
-                try
-                {
-                    _pendingResults[callId] = func();
-                }
-                catch (Exception ex)
-                {
-                    _pendingResults[callId] = JsonError(ex.Message);
-                }
-                finally
-                {
-                    evt.Set();
-                }
-            });
-
-            if (!evt.Wait(timeoutMs))
-            {
-                _pendingEvents.TryRemove(callId, out _);
-                return JsonError("Main thread call timed out");
-            }
-
-            _pendingEvents.TryRemove(callId, out _);
-            _pendingResults.TryRemove(callId, out var result);
-            evt.Dispose();
-            return result ?? JsonError("No result");
-        }
-
-        // ── JSON Helpers ───────────��────────────────────────────
-
-        private static string JsonError(string msg)
-        {
-            return $"{{\"error\":\"{Escape(msg)}\"}}";
-        }
-
-        private static string Bool(bool v) => v ? "true" : "false";
-
-        private static string Escape(string s)
-        {
-            if (s == null) return "";
-            return s.Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"")
-                    .Replace("\n", "\\n")
-                    .Replace("\r", "\\r")
-                    .Replace("\t", "\\t");
+            public const int Queued = 0, Running = 1, Cancelled = 2;
+            public int State;
+            public ApiResponse Result;
+            public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
         }
 
         /// <summary>
-        /// Reads a JSON boolean for the given key. Returns defaultValue if the key is missing or not true/false.
+        /// Run <paramref name="func"/> on Unity's main thread and wait for its result.
+        /// If the main thread does not pick the call up in time it is cancelled, so a request
+        /// that reported a timeout never takes effect later.
         /// </summary>
-        internal static bool ExtractJsonBool(string json, string key, bool defaultValue)
+        private ApiResponse RunOnMainThreadSync(Func<ApiResponse> func)
         {
-            string pattern = "\"" + key + "\"";
-            int idx = json.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0)
-                return defaultValue;
-            idx += pattern.Length;
-            while (idx < json.Length && (json[idx] == ' ' || json[idx] == ':' || json[idx] == '\t'))
-                idx++;
+            int mainId = GameBridge.MainThreadId;
+            if (mainId != 0 && Thread.CurrentThread.ManagedThreadId == mainId)
+                return Guarded(func);
 
-            if (idx + 4 <= json.Length &&
-                string.Compare(json, idx, "true", 0, 4, StringComparison.OrdinalIgnoreCase) == 0)
-                return true;
-            if (idx + 5 <= json.Length &&
-                string.Compare(json, idx, "false", 0, 5, StringComparison.OrdinalIgnoreCase) == 0)
-                return false;
-            return defaultValue;
+            var call = new PendingCall();
+            _mainThreadQueue.Enqueue(() =>
+            {
+                if (Interlocked.CompareExchange(ref call.State, PendingCall.Running, PendingCall.Queued) != PendingCall.Queued)
+                    return; // the caller gave up
+                call.Result = Guarded(func);
+                call.Done.Set();
+            });
+
+            int timeoutMs = Math.Max(1000, _mainThreadTimeoutMs.Value);
+            if (call.Done.Wait(timeoutMs))
+                return call.Result;
+
+            if (Interlocked.CompareExchange(ref call.State, PendingCall.Cancelled, PendingCall.Queued) == PendingCall.Queued)
+                return ApiResponse.Error(504, "Timed out waiting for the game's main thread (is the game paused or still loading?). The request was not applied.");
+
+            // Already executing on the main thread: let it finish rather than misreport.
+            if (call.Done.Wait(60000))
+                return call.Result;
+            return ApiResponse.Error(504, "The game's main thread did not finish the request; its outcome is unknown.");
         }
 
-        // Minimal JSON string extractor (no external JSON lib in .NET 4.6)
-        internal static string ExtractJsonString(string json, string key)
+        private static ApiResponse Guarded(Func<ApiResponse> func)
         {
-            string pattern = "\"" + key + "\"";
-            int idx = json.IndexOf(pattern);
-            if (idx < 0) return null;
-            idx += pattern.Length;
-
-            // Skip whitespace and colon
-            while (idx < json.Length && (json[idx] == ' ' || json[idx] == ':' || json[idx] == '\t'))
-                idx++;
-
-            if (idx >= json.Length) return null;
-
-            if (json[idx] == '"')
+            try
             {
-                // String value
-                idx++;
-                var sb = new StringBuilder();
-                while (idx < json.Length && json[idx] != '"')
-                {
-                    if (json[idx] == '\\' && idx + 1 < json.Length)
-                    {
-                        idx++;
-                        switch (json[idx])
-                        {
-                            case 'n': sb.Append('\n'); break;
-                            case 'r': sb.Append('\r'); break;
-                            case 't': sb.Append('\t'); break;
-                            case '\\': sb.Append('\\'); break;
-                            case '"': sb.Append('"'); break;
-                            default: sb.Append(json[idx]); break;
-                        }
-                    }
-                    else
-                    {
-                        sb.Append(json[idx]);
-                    }
-                    idx++;
-                }
-                return sb.ToString();
+                return func();
             }
-            else
+            catch (ApiException ex)
             {
-                // Number or literal
-                var sb = new StringBuilder();
-                while (idx < json.Length && json[idx] != ',' && json[idx] != '}' && json[idx] != ' ')
-                {
-                    sb.Append(json[idx]);
-                    idx++;
-                }
-                return sb.ToString();
+                return ApiResponse.Error(ex.Status, ex.Message);
+            }
+            catch (MiniJson.JsonException ex)
+            {
+                return ApiResponse.Error(400, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"Handler error: {ex}");
+                return ApiResponse.Error(500, $"{ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        private static void SendResponse(HttpListenerResponse response, string json, int statusCode = 200)
+        private static void SendResponse(HttpListenerResponse response, ApiResponse apiResponse)
         {
-            response.StatusCode = statusCode;
-            response.ContentType = "application/json";
+            var buffer = Encoding.UTF8.GetBytes(apiResponse.Json);
+            response.StatusCode = apiResponse.Status;
+            response.ContentType = "application/json; charset=utf-8";
             response.Headers.Add("Access-Control-Allow-Origin", "*");
-            var buffer = Encoding.UTF8.GetBytes(json);
             response.ContentLength64 = buffer.Length;
             response.OutputStream.Write(buffer, 0, buffer.Length);
             response.OutputStream.Close();

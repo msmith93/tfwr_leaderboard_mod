@@ -16,7 +16,7 @@ Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in
 
 ## Before Starting
 
-**First, create a task checklist for this iteration** using TaskCreate. Register one task per mandatory step before doing any other work. Replace `N` with the actual iteration number once you determine it (step 1 below).
+**First, create a task checklist for this iteration** using TaskCreate. Register one task per mandatory step before doing any other work. Replace `N` with the actual iteration number once you determine it (step 1 below). If no task tool is available in this session, keep the same checklist in your own notes and state each step's completion in your reply as you go; the steps and their order still apply.
 
 Tasks to create:
 - `[iter N] Before Starting` — read tracker, leaderboard.md, builtins, prior notes
@@ -35,8 +35,9 @@ Mark each task `in_progress` when you start it and `completed` when it is done. 
 
 1. Read `iterations/iteration_tracker.json` to understand the current state.
 2. Read `documentation/docs/unlocks/leaderboard.md` to confirm the win condition and starting inventory for the target leaderboard.
-3. Read `documentation/builtins.py` to understand available game functions.
+3. Check `documentation/builtins.py` for the game functions you plan to use. The file is long (about 3,500 lines); on a first iteration skim the function list (`grep -n "^def " documentation/builtins.py`) and read the entries relevant to this leaderboard rather than the whole file.
 4. If previous iterations exist, read the most recent `iterations/iteration_<n>_notes.md` to understand what has been tried.
+5. Confirm the game is usable before investing in a script: run the **Preflight** in `.claude/skills/invoke/SKILL.md` (`/status` answers, `compat_warnings` is empty, the right save is active, menu closed). If the mod does not match the game, stop and tell the user.
 
 → Mark `[iter N] Before Starting` **completed**.
 
@@ -56,7 +57,9 @@ Mark each task `in_progress` when you start it and `completed` when it is done. 
 ./scripts/tts.py "<what you're measuring and why>" --voice am_adam
 ```
 
-Write small, focused scripts that each measure one thing. Use `get_tick_count()`, `get_time()`, and `quick_print()` to capture measurements. Submit each via the API with `mode: "execute"` (see the invoke skill for the API flow).
+Write small, focused scripts that each measure one thing. Use `get_tick_count()`, `get_time()`, and `quick_print()` to capture measurements. Run each with `python3 scripts/submit.py diagnostics/diag_<leaderboard>_<what>.py diag_<what>` (execute mode on the live farm), or `python3 scripts/run_sim_script.py` when the measurement needs leaderboard-like starting items (see the invoke skill).
+
+Diagnostics in execute mode use the save's real farm and inventory, so their numbers depend on that save's unlock levels. Measure inside `simulate()` when the leaderboard's fixed conditions matter.
 
 Examples of useful measurements:
 - Growth/harvest times and yields for the relevant plant type
@@ -120,7 +123,13 @@ Examples of useful measurements:
 
 Use the pre-approved helper (auto-approved via `python3:*`, no shell loop prompts).
 
-**Bash timeout:** always pass `timeout: 120000` (2 minutes) on the Bash tool call for `run_algorithm.py`. Do not use a longer timeout.
+**Running it:** a benchmark usually finishes within a few minutes of wall-clock time but can outlast one foreground command. Run the helper in the background with its output in a log and an exit marker, then wait for the marker:
+
+```bash
+python3 scripts/run_algorithm.py <args> > /tmp/tfwr_run.log 2>&1; echo "RUNNER_EXIT:$?" >> /tmp/tfwr_run.log
+```
+
+The run is over when the log contains `RUNNER_EXIT:`. `RUNNER_EXIT:0` means the benchmark completed; anything else means the helper stopped early and printed why (parse error with line number, runtime error, or timeout). Fix the script and rerun; that is still the same iteration.
 
 **Without observer preview** (`demo_seconds` is `0` or unset for standalone iterate):
 
@@ -132,16 +141,26 @@ python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n
 
 **Interview mode:** TTS is your only voice. The interviewer watches the game window but cannot read your thoughts. Narrate every meaningful decision, strategy choice, and reaction to results — out loud, in plain English, as if explaining your reasoning to a senior engineer watching over your shoulder. Be specific (cite numbers, mechanics, tradeoffs), stay concise (1-3 sentences per call), and keep energy up.
 
+Each line you speak is also shown as a caption in the game, word for word, so write lines that read well on screen: no file paths, no code, numbers a viewer can take in at a glance. The game also shows a scoreboard (iteration, live average, best so far, history) and frames the farm automatically during `run_algorithm.py`; you do not need to describe those numbers aloud while they are on screen.
+
 Say what you're submitting and what result you're hoping for:
 ```bash
 ./scripts/tts.py "<what you're running and what you expect>" --voice am_adam
 ```
 
 ```bash
-python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000 --demo-seconds <demo_seconds>
+python3 scripts/run_algorithm.py iterations/iteration_<n>_<name>.py iteration_<n>_<name> <Leaderboard> 5000 --demo-seconds <demo_seconds> --narrate
 ```
 
+`--narrate` adds one automatic spoken line halfway through the benchmark (runs so far, running average, difference to the best). Leave it out for runs nobody is watching.
+
 This handles: status check → upload → sanity check → stop → optional **1×** `leaderboard_run` for `--demo-seconds` wall time (then stop) → high-speed `leaderboard_run` → poll → parse.
+
+On success the log ends with three blocks from the benchmark phase:
+
+- `=== FULL OUTPUT ===`: everything the script printed
+- `=== GAME RESULT ===`: the game's own verdict: `Completed` (goal reached), `Runs`, `Average`
+- `=== PARSED RESULTS ===`: statistics from the `FINAL_TIME` lines
 
 ### Observer preview (benchmark metrics only)
 
@@ -157,7 +176,6 @@ The runner is simple since `leaderboard_run` handles repetition internally (repe
 
 ```python
 leaderboard_run(Leaderboards.<TARGET>, "iteration_<n>_<name>", 5000)
-quick_print("---DONE---")
 ```
 
 Replace `<TARGET>` with the leaderboard enum from `documentation/docs/unlocks/leaderboard.md` (e.g., `Hay_Single`, `Dinosaur`, `Pumpkins_Single`).
@@ -197,6 +215,8 @@ quick_print("worst: ", max(times))
 Parse the runner's output and save structured results to `iterations/iteration_<n>_results.json`.
 
 For `leaderboard_run` output: parse all `FINAL_TIME: <value>` lines to get per-repetition times. For `simulate` output: parse `seed N time: T` lines.
+
+Set `win_rate` from the `GAME RESULT` block, not from the presence of `FINAL_TIME` lines: a script that ends without reaching the goal still prints its time. `Completed: True` means every repetition reached the goal (`win_rate: 1.0`). `Completed: False` means the last repetition did not, so the script is not a valid leaderboard entry yet: record the times you have, set `win_rate` to (repetitions that reached the goal) / (repetitions), and say so plainly in the notes. The game's `Average` should agree with your computed mean to within rounding; if it does not, report both.
 
 The results JSON must follow this schema:
 
@@ -270,6 +290,8 @@ If results are unexpectedly bad, note this explicitly. That signals the **leader
 
 Use the `mcp__discord-bot__send_discord` tool to send a 2-5 sentence summary to the channel named `"bot"`.
 
+If the Discord tool is not available in this session (the server failed to connect), do not block on it: tell the user the message could not be sent, include the text you would have sent in your reply, and mark the step completed.
+
 Format:
 > **TFWR Iteration <n>: <name>** (<leaderboard>)
 > <strategy summary in 1 sentence>. Mean time: <mean>s across <N> runs (best: <best>s, worst: <worst>s).
@@ -314,6 +336,8 @@ After updating the tracker, clean up all temporary scripts from the game using `
 1. **Runner script**: always delete (`"filename": "runner"`)
 2. **Diagnostic scripts**: delete any `diag_*` scripts created in Step 0
 3. **Algorithm script**: optionally delete if the game workspace is getting crowded
+
+Only delete files this workflow created. The save also contains the user's own scripts.
 
 ```bash
 curl -s -X POST http://localhost:8787/delete-script -d '{"filename": "runner"}'

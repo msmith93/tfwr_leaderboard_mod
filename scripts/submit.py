@@ -1,69 +1,44 @@
 #!/usr/bin/env python3
-# Helper script for submitting scripts to TFWR REST API
-# Usage: python3 scripts/submit.py <script_file> <filename_in_game> [--runner]
-#
-# --runner: submit as a runner calling leaderboard_run
-# Default: submit the file directly as execute mode
+"""
+Upload a script to the game, run it in execute mode, and print its output.
 
+Usage: python3 scripts/submit.py <script_file> <filename_in_game> [timeout_seconds]
+
+For leaderboard benchmarks use scripts/run_algorithm.py instead.
+"""
+import os
 import sys
-import json
-import urllib.request
-import urllib.error
-import time
 
-BASE = "http://localhost:8787"
-
-def post(path, data):
-    body = json.dumps(data).encode()
-    req = urllib.request.Request(BASE + path, data=body,
-                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())
-
-def get(path):
-    with urllib.request.urlopen(BASE + path) as r:
-        return json.loads(r.read())
-
-def poll_until_done(interval=5, max_wait=600):
-    for _ in range(max_wait // interval):
-        time.sleep(interval)
-        data = get("/poll")
-        out = data.get("output", "")
-        ft = [l for l in out.split("\n") if "FINAL_TIME" in l]
-        print(f"  finished={data.get('finished')} FINAL_TIME_count={len(ft)}", flush=True)
-        if data.get("finished"):
-            return data
-    return None
+sys.path.insert(0, os.path.dirname(__file__))
+import api
 
 if len(sys.argv) < 3:
-    print("Usage: submit.py <script_file> <game_filename> [--runner <leaderboard>]")
+    print("Usage: submit.py <script_file> <game_filename> [timeout_seconds]")
     sys.exit(1)
 
 script_file = sys.argv[1]
 game_filename = sys.argv[2]
-is_runner = "--runner" in sys.argv
+timeout = int(sys.argv[3]) if len(sys.argv) > 3 else 600
 
-with open(script_file) as f:
-    code = f.read()
-
-# Check status
-status = get("/status")
+status = api.wait_until_ready_for_run()
 print(f"Game status: {status}")
-if not status.get("ready"):
-    print("Game not ready!")
-    sys.exit(1)
 
-# Submit
-result = post("/run-script", {"code": code, "filename": game_filename, "mode": "execute"})
+result = api.submit_file(script_file, game_filename)
+if result.get("error"):
+    where = f" (line {result['line']})" if result.get("line") else ""
+    print(f"ERROR{where}: {result['error']}")
+    sys.exit(1)
 print(f"Submitted: {result}")
 
-# Poll
 print("Polling...")
-final = poll_until_done()
-if final:
-    out = final.get("output", "")
-    print("=== OUTPUT ===")
-    print(out)
-    print("=== END ===")
-else:
-    print("Timed out waiting for result")
+final = api.poll_until_done(interval=2, timeout=timeout)
+if final is None:
+    print(f"Timed out after {timeout}s; the script is still running (python3 scripts/stop.py to stop it)")
+    final = api.poll()
+
+print("=== OUTPUT ===")
+print(final.get("output", ""))
+print("=== END ===")
+if final.get("state") == "error":
+    print(f"RUNTIME ERROR:\n{final.get('error')}")
+    sys.exit(1)

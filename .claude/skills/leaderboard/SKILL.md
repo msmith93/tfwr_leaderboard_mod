@@ -37,15 +37,18 @@ Before the first iteration:
 2. Skim the latest `iterations/iteration_<n>_notes.md` for that line of work, if any.
 3. Confirm win condition and starting inventory in `documentation/docs/unlocks/leaderboard.md`.
 4. Ensure **`demo_seconds`** is resolved per **Observer demo** above (parse from prompt or **ask once** if still unspecified). You need this value before the first iteration’s Step 2.
+5. Run the **Preflight** from `.claude/skills/invoke/SKILL.md` once: the game answers on `/status`, `compat_warnings` is empty, the intended save is active (the game often starts on a blank `Save0`; ask the user which save to use if it is not obvious), and the menu is closed. If the game was updated since the last session, also refresh `documentation/` from the game install (see CLAUDE.md) and re-read `leaderboard.md`, since win conditions and available leaderboards can change. Do not start iterating against a game the mod does not match.
 
 The **iterate** skill repeats its own “Before Starting” reads each time you run it; you do not need to duplicate every file on every loop, but re-check the tracker after each iteration completes.
 
 **With observer preview** (`demo_seconds` > 0):
 
-**Interview mode:** TTS is your only voice during demo sessions. Open the session with narration — introduce the challenge, state the current best time (if any), and describe what the first experiment will try. Be specific and energetic.
+**Interview mode:** TTS is your only voice during demo sessions. Open the session with narration — introduce the challenge, state the current best time (if any), and describe what the first experiment will try. Be specific and energetic. Spoken lines appear as captions in the game, and the game shows a scoreboard and frames the farm during each run (see "What the Viewer Sees" in the invoke skill).
+
+Before the first narration, check that speech works: if `./scripts/tts.py` fails (for example a missing Python environment), tell the user once and continue with captions only by calling `python3 -c "import sys; sys.path.insert(0,'scripts'); import api; api.overlay(caption='<line>', caption_seconds=8)"` in place of each TTS call.
 
 ```bash
-./scripts/tts.py “<opening: challenge intro, current best or 'no prior work', first plan>” --voice am_adam
+./scripts/tts.py "<opening: challenge intro, current best or 'no prior work', first plan>" --voice am_adam
 ```
 
 ## Outer loop
@@ -66,6 +69,7 @@ Repeat until **stop** (see below):
    - **Diminishing returns**: if **3** consecutive iterations fail to improve the best mean by at least 1%, strongly consider stopping unless the user asked for more exploration.
    - **Hard cap**: do not exceed the session **max iterations** unless the user raises the limit.
    - **User stop**: if the user says to stop or change direction, stop or replan.
+   - **Invalid result**: an iteration whose `GAME RESULT` shows `Completed: False` did not reach the win condition. It cannot be the best iteration regardless of its times; the next pass should fix that first.
 
    **With observer preview** (`demo_seconds` > 0): Announce the outcome and your next direction out loud — new best, flat result, or stopping, and why.
    ```bash
@@ -81,11 +85,22 @@ Repeat until **stop** (see below):
 ./scripts/tts.py "<closing: final best time, why it worked, what you'd try next>" --voice am_adam
 ```
 
+**Session recap page** (every session, with or without the observer preview): build the recap and publish it so the user has a link to keep or share.
+
+```bash
+python3 scripts/session_recap.py --since <id of the first iteration run this session>
+```
+
+This writes `iterations/recap_<leaderboard>.html`: the best time, a chart of every iteration with this session's highlighted, one line per iteration on what was tried, and the open ideas from the latest notes. It reads the tracker, each `iteration_<n>_results.json` (`strategy_summary`) and the latest notes (`## Next Steps`), so those need to be complete first.
+
+Publish that file with the Artifact tool. If `iteration_tracker.json` has a `recap_url` for this leaderboard, pass it as `url` so the same link is updated (read the artifact first, as the tool requires); otherwise publish a new one and save its link as `recap_url` in the tracker. If no Artifact tool is available, give the user the file path instead. Note the first iteration id of the session at startup so `--since` is right.
+
 When you exit the loop, summarize for the user:
 
 - **Best script**: path and iteration id from the tracker (`best_iteration`, `best_mean_time`).
 - **What changed** across the session (brief bullet list).
 - **Open ideas** left in the last notes, if any.
+- **Recap link** (or file path).
 
 ## Relationship to other skills
 
@@ -93,6 +108,6 @@ When you exit the loop, summarize for the user:
 | --- | --- |
 | **leaderboard** (this file) | Prompt → plan → loop → stop; no direct API recipes. |
 | **iterate** | Single iteration: diagnostics → script → simulate → results → notes → Discord → tracker → cleanup. |
-| **invoke** | REST API at `localhost:8787`, two-file upload, `leaderboard_run` / `simulate`, parsing output, `/delete-script`. |
+| **invoke** | REST API at `localhost:8787`: preflight, helper scripts, `leaderboard_run` / `simulate`, reading results, save loading, `/delete-script`. |
 
 There is no programmatic “sub-skill call.” **Calling iterate** means reading `.claude/skills/iterate/SKILL.md` and performing that workflow end-to-end once.

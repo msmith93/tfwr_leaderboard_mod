@@ -63,18 +63,29 @@ The game must be running with the TFWRRemoteAPI mod loaded. Full docs: `mod/READ
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/status` | GET | Check if game is ready |
-| `/run-script` | POST | Submit and execute a script |
-| `/poll` | GET | Check run status, get output and inventory |
-| `/output` | GET | Get `quick_print()` output buffer only |
+| `/status` | GET | Game readiness, active save, mod/game versions, `compat_warnings` |
+| `/run-script` | POST | Submit and execute a script (parse errors come back as HTTP 400 with `line`) |
+| `/poll` | GET | Run `state`, runtime `error`, leaderboard result, `run_times`, full output, inventory |
+| `/output` | GET | Output only (`?since=<next_offset>` for incremental reads) |
 | `/inventory` | GET | Get current farm inventory |
-| `/stop` | POST | Stop any active execution |
-| `/dismiss` | GET/POST | Dismiss leaderboard result screen (also auto-dismissed after 3s) |
+| `/stop` | POST | Stop any active execution and return the game to an idle farm |
+| `/dismiss` | GET/POST | Dismiss leaderboard result screen (auto-dismissed after 3s for API-started runs) |
 | `/delete-script` | POST | Delete a script file and close its code window |
+| `/saves` | GET | List saves and the active one |
+| `/load-save` | POST | Load a save and close the title menu |
+| `/overlay` | POST | On-screen caption strip and scoreboard panel for people watching |
+| `/camera` | GET/POST | Frame the farm (`{"fit": true}`), set zoom, or release the view |
+| `/screenshot` | GET | Save the current frame; use `python3 scripts/screenshot.py out.png` |
+
+Errors use HTTP status codes (400/404/405/409/503/504) with a JSON `{"error": ...}` body; `scripts/api.py` returns these as dicts with `error` and `http_status` rather than raising.
+
+**After a game update:** rebuild the mod (`cd mod && bash build.sh`), restart the game, and check that `compat_warnings` in `/status` is empty. `documentation/` is a local (gitignored) copy of the game's `StreamingAssets/Languages/EN` docs plus `builtins.py`; re-copy it from the game install when the game updates.
+
+**Save check:** the game can start on a blank `Save0` (it misreads a save name like `1.0`). If scripts fail with "Unlocks.X must be unlocked", check `active_save` in `/status` and run `python3 scripts/load_save.py <name>`.
 
 ### Submitting scripts
 
-Always use `mode: "execute"`. To run leaderboard-style simulations, call `leaderboard_run()` or `simulate()` from within the script itself.
+Use `mode: "execute"` by default. To run leaderboard-style simulations, call `leaderboard_run()` or `simulate()` from within the script itself (this is what `scripts/run_algorithm.py` does). The mod also has `mode: "simulate"` and `mode: "leaderboard"`, which run a file directly without a runner script; see `mod/README.md`.
 
 ```bash
 curl -s -X POST http://localhost:8787/run-script \
@@ -92,7 +103,7 @@ leaderboard_run(leaderboard, filename, speedup)
 - `leaderboard`: e.g. `Leaderboards.Hay_Single`, `Leaderboards.Dinosaur`
 - `filename`: name of a code file already in the game workspace
 - `speedup`: speed multiplier (5000 recommended)
-- Returns: `None` -- the algorithm script must self-report timing with `quick_print("FINAL_TIME: ", get_time())`
+- Returns: `None` -- have the algorithm script self-report timing with `quick_print("FINAL_TIME: ", get_time())`. The mod independently reports each repetition's time (`run_times`) and the game's final result (`leaderboard`: completed, average, runs) in `/poll`.
 
 See `documentation/docs/unlocks/leaderboard.md` for all leaderboard names and win conditions.
 
@@ -125,7 +136,7 @@ run_time = simulate(filename, sim_unlocks, sim_items, sim_globals, seed, speedup
 
 The **leaderboard** skill resolves whether to use an **observer preview** (ask the user if not specified). Run:
 
-`python3 scripts/run_algorithm.py <path> <game_filename> <Leaderboard> [speedup] [--demo-seconds N]`
+`python3 scripts/run_algorithm.py <path> <game_filename> <Leaderboard> [speedup] [--demo-seconds N] [--save NAME]`
 
 When `N` > 0, the helper runs `leaderboard_run` at **1×** for `N` wall-clock seconds (then stops) before the high-speed benchmark. Default omits the preview (`N` omitted = 0). For `iteration_<n>_results.json`, parse `FINAL_TIME` only from the **benchmark** phase, not the preview (see `.claude/skills/iterate/SKILL.md` Step 2).
 
@@ -177,6 +188,7 @@ Concrete ideas for the next iteration.
   "leaderboard": "Hay_Single",
   "best_iteration": 3,
   "best_mean_time": 98.7,
+  "recap_url": "https://claude.ai/artifact/...",
   "iterations": [
     {
       "id": 1,
@@ -191,6 +203,8 @@ Concrete ideas for the next iteration.
   ]
 }
 ```
+
+`recap_url` is optional: the published recap page for this leaderboard (`python3 scripts/session_recap.py` builds it; the **leaderboard** skill publishes it at the end of a session).
 
 ## Skills
 

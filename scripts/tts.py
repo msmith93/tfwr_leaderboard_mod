@@ -1,7 +1,9 @@
 #!/home/msmith/venvs/venv/bin/python3
 import argparse
+import json
 import subprocess
 import sys
+import urllib.request
 import numpy as np
 
 try:
@@ -42,7 +44,21 @@ DEFAULT_OUTPUT = "tts_output.wav"
 #   Chinese male:             zm_yunjian, zm_yunxi, zm_yunxia, zm_yunyang
 
 
-def synthesize(text, voice, output_path, no_play):
+GAME_API = "http://localhost:8787"
+
+
+def _caption(text, seconds=0):
+    """Show (or with "" remove) the spoken text as a caption in the game. Best effort."""
+    try:
+        body = json.dumps({"caption": text, "caption_seconds": seconds}).encode()
+        req = urllib.request.Request(GAME_API + "/overlay", data=body,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass  # game not running or older mod: speech still works
+
+
+def synthesize(text, voice, output_path, no_play, caption=True):
     pipeline = KPipeline(lang_code="a")
 
     device = "cuda" if _cuda_available() else "cpu"
@@ -63,6 +79,9 @@ def synthesize(text, voice, output_path, no_play):
     print(f"Saved: {output_path}")
 
     if not no_play:
+        if caption:
+            # Caption stays up for the length of the audio plus a moment to finish reading.
+            _caption(text, len(audio_data) / SAMPLE_RATE + 2.0)
         _play(output_path)
 
 
@@ -104,9 +123,10 @@ def main():
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help=f"Output WAV path (default: {DEFAULT_OUTPUT})")
     parser.add_argument("--voice", default=DEFAULT_VOICE, help=f"Voice name (default: {DEFAULT_VOICE})")
     parser.add_argument("--no-play", action="store_true", help="Save WAV without playing it")
+    parser.add_argument("--no-caption", action="store_true", help="Do not show the text as a caption in the game")
     args = parser.parse_args()
 
-    synthesize(args.text, args.voice, args.output, args.no_play)
+    synthesize(args.text, args.voice, args.output, args.no_play, caption=not args.no_caption)
 
 
 if __name__ == "__main__":
