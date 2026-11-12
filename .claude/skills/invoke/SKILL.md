@@ -21,6 +21,7 @@ Use the Python helpers in `scripts/` for anything that waits, loops or parses. T
 | `python3 scripts/stop.py` | Stop any active execution |
 | `python3 scripts/load_save.py [name]` | List saves, or load one and close the menu |
 | `python3 scripts/session_recap.py [--since N]` | Build the recap page for the tracked leaderboard (`iterations/recap_<leaderboard>.html`) |
+| `python3 scripts/leaderboard.py <Leaderboard> [time_seconds]` | The real Steam leaderboard: number of players, top times, the time needed for each percentile, the user's recorded best, and where a given time would rank (read-only) |
 | `python3 scripts/screenshot.py [out.png]` | Save what the game window shows right now (then Read the image to look at it) |
 
 Single `curl` calls are fine for one-off checks:
@@ -130,7 +131,8 @@ For people watching the game window, the helpers put three things on screen with
 
 - **Captions**: every `./scripts/tts.py "<line>"` call shows the same text in a strip at the bottom of the game for as long as the audio plays. The caption is exactly what is spoken, so keep spoken lines short and self-contained. (`--no-caption` turns it off.)
 - **Scoreboard**: `run_algorithm.py` shows a panel with the leaderboard, the iteration, the live clock and running average, the best time so far, and a bar per past iteration. It reads the best time and history from `iterations/iteration_tracker.json`, which is one more reason to keep the tracker current.
-- **Camera**: `run_algorithm.py` frames the whole farm at the start of the preview and the benchmark, and again when the run is over.
+- **Camera**: every helper that waits on a run (`run_algorithm.py`, `submit.py`, `run_sim_script.py`, and `api.poll_until_done`) frames the whole farm shortly after the run starts and again when it ends. Diagnostics run through `submit.py` or `run_sim_script.py` also label the scoreboard with what is running. If you start a run any other way (a raw `curl`, or `api.submit` without polling), call `api.camera_fit()` about a second after it starts, or the viewer may be looking at an empty corner of the screen.
+- **Windows**: every script uploaded to the game opens a code window on top of the farm, and a wide one hides it. `submit.py` and `run_sim_script.py` therefore remove their script from the game when it finishes (`--keep` leaves it). Before any preview or benchmark, make sure no leftover diagnostic windows are open: delete them with `/delete-script`. The algorithm's own window and `runner` are expected and sit below the farm.
 
 `run_algorithm.py --narrate` adds one spoken (and captioned) progress line halfway through the benchmark, comparing the running average with the best so far. `--no-overlay` disables the scoreboard and camera moves.
 
@@ -186,6 +188,8 @@ Note: `sum()` is not available in the game interpreter. Use an explicit accumula
 | `run_times`, `leaderboard`, `sim_time_seconds` | Results recorded by the mod (see above) |
 
 When `--demo-seconds` is used, take statistics from the **benchmark** phase only: the helper's final `FULL OUTPUT`, `GAME RESULT` and `PARSED RESULTS` blocks all belong to the benchmark. Ignore anything printed during the preview.
+
+`run_algorithm.py` also prints a `=== WORLD STANDING ===` block: where this run's mean would rank among real players, the times needed for the top 1/5/10/25/50/75 percent, the #1 time, and the user's recorded best. The same standing is shown on the scoreboard. It says "Not available" when Steam cannot be reached; that does not invalidate the run.
 
 To parse `FINAL_TIME` yourself:
 

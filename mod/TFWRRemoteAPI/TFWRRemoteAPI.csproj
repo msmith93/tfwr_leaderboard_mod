@@ -57,6 +57,10 @@
       <HintPath>$(GameDir)/TheFarmerWasReplaced_Data/Managed/UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(GameDir)/TheFarmerWasReplaced_Data/Managed/com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(GameDir)/TheFarmerWasReplaced_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>

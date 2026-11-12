@@ -21,6 +21,7 @@ namespace TFWRRemoteAPI
         public static string Title;
         public static string Subtitle;
         public static string Status;
+        public static string Standing;         // e.g. "world #1,204 of 38,112 (top 3.2%)"
         public static double? BestSeconds;
         public static string BestLabel;
         public static readonly List<double> History = new List<double>();
@@ -34,6 +35,7 @@ namespace TFWRRemoteAPI
             Title = null;
             Subtitle = null;
             Status = null;
+            Standing = null;
             BestSeconds = null;
             BestLabel = null;
             History.Clear();
@@ -148,6 +150,7 @@ namespace TFWRRemoteAPI
                 + line                              // runs row
                 + (BestSeconds.HasValue ? line : 0)
                 + (hasHistory ? 90 * u : 0)
+                + (string.IsNullOrEmpty(Standing) ? 0 : line)
                 + (string.IsNullOrEmpty(Status) ? 0 : line);
 
             Fill(new Rect(x, y, width, height), new Color(0.05f, 0.07f, 0.1f, 0.85f));
@@ -193,6 +196,12 @@ namespace TFWRRemoteAPI
                 DrawHistory(new Rect(cx, cy + 8 * u, cw, 60 * u), u);
                 GUI.Label(new Rect(cx, cy + 68 * u, cw, 22 * u), $"{History.Count} iterations, lower is better", _smallStyle);
                 cy += 90 * u;
+            }
+
+            if (!string.IsNullOrEmpty(Standing))
+            {
+                GUI.Label(new Rect(cx, cy, cw, line), Standing, _rowStyle);
+                cy += line;
             }
 
             if (!string.IsNullOrEmpty(Status))

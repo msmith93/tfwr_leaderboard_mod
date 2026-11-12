@@ -24,6 +24,8 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--speedup", type=int, default=5000)
     p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--keep", action="store_true",
+                   help="Leave the script and runner in the game afterwards (default: remove them so their windows do not cover the farm)")
     args = p.parse_args()
 
     api.wait_until_ready_for_run()
@@ -48,6 +50,10 @@ def main():
         'quick_print("---DONE---")'
     )
     print("Runner:\n" + runner)
+    # Tell whoever is watching the game what is running.
+    api.overlay(scoreboard={"title": "Diagnostic", "subtitle": args.game_filename,
+                            "status": f"simulation, seed {args.seed}, {args.speedup}x",
+                            "best_seconds": -1, "best_label": "", "history": []})
     r = api.submit(runner, "runner")
     print(f"  {r}")
     if r.get("error"):
@@ -61,6 +67,12 @@ def main():
     print("=== OUTPUT ===")
     print(data.get("output", ""))
     print("=== END ===")
+    api.overlay(scoreboard={"status": str(data.get("state", "finished"))})
+    if not args.keep:
+        api.stop()
+        api.delete_script("runner")
+        api.delete_script(args.game_filename)
+        print(f"Removed 'runner' and '{args.game_filename}' from the game (use --keep to leave them).")
 
 
 if __name__ == "__main__":

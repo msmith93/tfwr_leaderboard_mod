@@ -360,6 +360,8 @@ namespace TFWRRemoteAPI
                     return HandleCamera(ReadBody(request));
                 case "/screenshot":
                     return HandleScreenshot();
+                case "/leaderboard":
+                    return HandleLeaderboard(request);
                 case "/load-save":
                     if (method != "POST") return ApiResponse.Error(405, "POST required");
                     return HandleLoadSave(ReadBody(request));
@@ -840,6 +842,7 @@ namespace TFWRRemoteAPI
                         if (Overlay.Title == null) Overlay.Title = "";
                         if (board.ContainsKey("subtitle")) Overlay.Subtitle = MiniJson.GetString(board, "subtitle");
                         if (board.ContainsKey("status")) Overlay.Status = MiniJson.GetString(board, "status");
+                        if (board.ContainsKey("standing")) Overlay.Standing = MiniJson.GetString(board, "standing");
                         if (board.ContainsKey("best_label")) Overlay.BestLabel = MiniJson.GetString(board, "best_label");
                         if (board.ContainsKey("best_seconds"))
                         {
@@ -937,6 +940,69 @@ namespace TFWRRemoteAPI
                     .Num("seconds", seconds)
                     .ToString());
             });
+        }
+
+        /// <summary>
+        /// GET /leaderboard?name=Hay_Single[&time=123.4][&top=10]: the Steam leaderboard's size,
+        /// top times, times at a few percentiles, the player's own entry and where `time` would rank.
+        /// </summary>
+        private ApiResponse HandleLeaderboard(HttpListenerRequest request)
+        {
+            string name = request.QueryString["name"];
+            int top = 10;
+            if (!string.IsNullOrEmpty(request.QueryString["top"]) && !int.TryParse(request.QueryString["top"], out top))
+                return ApiResponse.Error(400, "'top' must be an integer");
+            double timeSeconds = 0;
+            string rawTime = request.QueryString["time"];
+            if (!string.IsNullOrEmpty(rawTime) && (!double.TryParse(rawTime, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out timeSeconds) || timeSeconds <= 0))
+                return ApiResponse.Error(400, "'time' must be a positive number of seconds");
+
+            SteamBoardQuery query = null;
+            string leaderboardName = null;
+            var started = RunOnMainThreadSync(() =>
+            {
+                var lb = GameBridge.FindLeaderboard(name);
+                if (string.IsNullOrEmpty(lb.steamLeaderboardName))
+                    return ApiResponse.Error(404, $"Leaderboard '{lb.leaderboardName}' has no Steam leaderboard");
+                leaderboardName = lb.leaderboardName;
+                query = new SteamBoardQuery(lb.steamLeaderboardName, top, (int)Math.Round(timeSeconds * 1000));
+                query.Start();
+                return ApiResponse.Ok("{}");
+            });
+            if (started.Status != 200) return started;
+
+            // Steam answers over several callbacks; placing a time takes ~log2(entries) round trips.
+            if (!query.Done.Wait(45000))
+                return ApiResponse.Error(504, "Steam did not answer the leaderboard query in time");
+            if (query.Error != null)
+                return ApiResponse.Error(502, query.Error);
+
+            Func<int, double> percentOf = rank => query.EntryCount > 0 ? Math.Round(rank * 100.0 / query.EntryCount, 2) : 0;
+            var writer = new MiniJson.ObjectWriter()
+                .Str("leaderboard", leaderboardName)
+                .Num("entry_count", query.EntryCount);
+
+            var topJson = new List<string>();
+            foreach (var e in query.Top)
+                topJson.Add(new MiniJson.ObjectWriter().Num("rank", e.Key).Num("time_seconds", e.Value / 1000.0).ToString());
+            writer.Raw("top", "[" + string.Join(",", topJson) + "]");
+
+            var pctJson = new List<string>();
+            foreach (var p in query.Percentiles)
+                pctJson.Add(new MiniJson.ObjectWriter().Num("top_percent", p.Key).Num("rank", p.Value.Key)
+                    .Num("time_seconds", p.Value.Value / 1000.0).ToString());
+            writer.Raw("percentiles", "[" + string.Join(",", pctJson) + "]");
+
+            writer.Raw("player", query.HasPlayer
+                ? new MiniJson.ObjectWriter().Num("rank", query.PlayerRank).Num("time_seconds", query.PlayerMs / 1000.0)
+                    .Num("top_percent", percentOf(query.PlayerRank)).ToString()
+                : "null");
+            writer.Raw("time_query", query.HasTimeRank
+                ? new MiniJson.ObjectWriter().Num("time_seconds", timeSeconds).Num("rank", query.TimeRank)
+                    .Num("top_percent", percentOf(Math.Min(query.TimeRank, Math.Max(1, query.EntryCount)))).ToString()
+                : "null");
+            return ApiResponse.Ok(writer.ToString());
         }
 
         private ApiResponse HandleScreenshot()

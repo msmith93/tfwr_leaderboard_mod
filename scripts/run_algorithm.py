@@ -145,9 +145,21 @@ def main():
             time.sleep(1.0)
             api.camera_fit()
 
+    # Where the best time so far stands on the real leaderboard (read-only; needs Steam).
+    def world_standing(seconds):
+        info = api.leaderboard(leaderboard, seconds)
+        q = info.get("time_query")
+        if info.get("error") or not q:
+            return "", info
+        return api.standing_text(q["rank"], info.get("entry_count", 0)), info
+
     if show:
-        api.overlay(scoreboard=dict(board, status="checking the script"))
+        api.overlay(scoreboard=dict(board, status="checking the script", standing=""))
         api.camera_fit()
+        if best:
+            text, _ = world_standing(best)
+            if text:
+                api.overlay(scoreboard={"standing": "best is " + text})
 
     # Step 1: Upload algorithm script (sanity check)
     print(f"\nStep 1: Uploading {script_path} as '{game_filename}'...")
@@ -161,7 +173,7 @@ def main():
     print(f"  Result: {result}")
 
     # Poll briefly for runtime errors (up to 15 seconds). The mod reports them as state "error".
-    data = api.poll_until_done(interval=5, timeout=15, verbose=True)
+    data = api.poll_until_done(interval=5, timeout=15, verbose=True, frame=show)
     if data is None:
         data = api.poll()
     out = data.get("output", "")
@@ -243,7 +255,7 @@ def main():
     # Poll until done (leaderboard runs can take many minutes)
     print("Polling (this may take several minutes)...")
     data = api.poll_until_done(interval=5 if args.narrate else 10, timeout=1800, verbose=True,
-                               on_poll=halfway_line if args.narrate else None)
+                               on_poll=halfway_line if args.narrate else None, frame=show)
 
     if not data:
         print("ERROR: Timed out waiting for leaderboard_run to finish")
@@ -295,6 +307,25 @@ def main():
         print(f"Worst: {worst:.3f}s")
     else:
         print("\nNo FINAL_TIME lines found in output.")
+
+    # Place this run's mean on the world leaderboard.
+    if times:
+        mean_time = sum(times) / len(times)
+        text, info = world_standing(mean_time)
+        print("\n=== WORLD STANDING ===")
+        if text:
+            print(f"A mean of {mean_time:.3f}s would be {text}")
+            for p in info.get("percentiles", []):
+                print(f"  top {p['top_percent']:g}% needs {p['time_seconds']:.1f}s")
+            if info.get("top"):
+                print(f"  #1 is {info['top'][0]['time_seconds']:.1f}s")
+            me = info.get("player")
+            if me:
+                print(f"  recorded personal best: {me['time_seconds']:.1f}s, {api.standing_text(me['rank'], info.get('entry_count', 0))}")
+            if show:
+                api.overlay(scoreboard={"standing": "this run: " + text})
+        else:
+            print(f"Not available: {info.get('error', 'no data')}")
 
     if show:
         completed = (result or {}).get("completed")

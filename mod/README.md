@@ -336,6 +336,39 @@ While the API holds the camera, the game's scroll limits are lifted (they normal
 
 `GET /camera` reports `zoom`, `world_size`, the screen size and `farm_rect` (where the farm currently is, in screen fractions).
 
+### `GET /leaderboard`
+
+Read-only look at a Steam leaderboard through the game's own Steam session. Nothing is uploaded.
+
+```
+GET /leaderboard?name=Carrots_Single&time=382.8&top=10
+```
+
+| Parameter | Description |
+| --------- | ----------- |
+| `name` | Leaderboard name, as for `leaderboard_run()` (`Carrots_Single`, `Leaderboards.Hay`, ...) |
+| `time` | Optional. A time in seconds to place on the leaderboard |
+| `top` | Optional. How many of the fastest entries to return (default 10, at most 100) |
+
+```json
+{
+  "leaderboard": "carrots_single",
+  "entry_count": 330,
+  "top": [{ "rank": 1, "time_seconds": 227.0 }],
+  "percentiles": [{ "top_percent": 10, "rank": 33, "time_seconds": 268.5 }],
+  "player": { "rank": 84, "time_seconds": 382.8, "top_percent": 25.45 },
+  "time_query": { "time_seconds": 382.8, "rank": 85, "top_percent": 25.76 }
+}
+```
+
+- `percentiles` - the time at the top 1, 5, 10, 25, 50 and 75 percent
+- `player` - the Steam user's own recorded best, or `null` if they have none
+- `time_query` - the rank `time` would get (only when `time` is given). Finding it takes about log2(`entry_count`) round trips to Steam, so allow a few seconds.
+
+Player names are not returned. Steam must be running; 502 means Steam refused or does not know the leaderboard, 504 that it did not answer in time. `python3 scripts/leaderboard.py <Leaderboard> [time]` prints this as a table.
+
+The scoreboard (`/overlay`) has a `standing` line for this, e.g. `"standing": "world #84 of 330 (top 25.5%)"`.
+
 ### `GET /screenshot`
 
 Asks Unity to save the current frame, overlay included, as `api_screenshot.png` in the game's data folder and returns its path (`{"path": "...", "width": 1920, "height": 1080}`). The file is written at the end of the frame. Under Proton the path is a Windows path inside the compat prefix; `scripts/screenshot.py [out.png]` waits for the file and copies it to a normal location.
@@ -408,6 +441,7 @@ Plugin.cs      BepInEx entry point: HTTP listener, routing, endpoint handlers, r
 GameBridge.cs  Wrappers around game APIs: code windows, parsing, stop/cleanup, saves, inventory
 GameHooks.cs   Startup compatibility check, run state, Harmony hooks that capture run outcomes
 Overlay.cs     Caption strip and scoreboard panel drawn over the game (IMGUI)
+SteamBoard.cs  Read-only Steam leaderboard queries (entry count, top times, percentiles, rank of a time)
 MiniJson.cs    Dependency-free JSON reader/writer (unit tested in ../TFWRRemoteAPI.Tests)
 ```
 

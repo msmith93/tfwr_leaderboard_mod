@@ -39,6 +39,8 @@ Before the first iteration:
 4. Ensure **`demo_seconds`** is resolved per **Observer demo** above (parse from prompt or **ask once** if still unspecified). You need this value before the first iteration’s Step 2.
 5. Run the **Preflight** from `.claude/skills/invoke/SKILL.md` once: the game answers on `/status`, `compat_warnings` is empty, the intended save is active (the game often starts on a blank `Save0`; ask the user which save to use if it is not obvious), and the menu is closed. If the game was updated since the last session, also refresh `documentation/` from the game install (see CLAUDE.md) and re-read `leaderboard.md`, since win conditions and available leaderboards can change. Do not start iterating against a game the mod does not match.
 
+6. Look at the real leaderboard once: `python3 scripts/leaderboard.py <Leaderboard>` (add the current best mean as a second argument if there is one). It shows what times other players reach. Use it to set expectations: if the top times are far below yours, the leading strategies use a mechanic you have not found yet, and looking for that mechanic is worth more than tuning. Say the target out loud in the opening narration when the demo is on (for example the top 10% time).
+
 The **iterate** skill repeats its own “Before Starting” reads each time you run it; you do not need to duplicate every file on every loop, but re-check the tracker after each iteration completes.
 
 **With observer preview** (`demo_seconds` > 0):
@@ -61,11 +63,12 @@ Repeat until **stop** (see below):
 - **Why:** the evaluate step (step 2) is supposed to use outcomes and notes to choose the *next* experiment. Writing or running several iterations in one shot skips that feedback and often wastes work (e.g. wrong branch after an unexpected result).
 - **Exception:** only batch multiple iterations in a single turn if the user **explicitly** asks for a fixed, predetermined set (e.g. “run these three thresholds as a grid, no evaluation between”) — and even then, prefer reporting after each run so partial results are visible.
 
-1. **Re-read** `.claude/skills/iterate/SKILL.md` **in full** before each iteration — do not rely on memory from prior passes, as context compression can cause steps to be silently skipped. Then execute it end-to-end, passing the same leaderboard, the session **`demo_seconds`** value (`0` or `N`), and any short directive for this iteration (e.g. “try column snake after notes suggest it”) so Steps 0–6 of iterate run exactly **one** numbered iteration.
+1. **Re-read** `.claude/skills/iterate/SKILL.md` **in full** before each iteration — do not rely on memory from prior passes, as context compression can cause steps to be silently skipped. Then execute it end-to-end, passing the same leaderboard, the session **`demo_seconds`** value (`0` or `N`), and any short directive for this iteration (e.g. “try column snake after notes suggest it”) so Steps 0–5 of iterate run exactly **one** numbered iteration.
 
 2. After iterate finishes (tracker updated, cleanup done), **evaluate**:
    - Did mean time (or the user’s metric) set a **new best** in `iteration_tracker.json`?
    - Is progress **meaningful**? Treat a change under **1%** in mean time vs the previous best as flat unless the user cares about smaller gains.
+   - Where does it stand? The `WORLD STANDING` block of the benchmark output gives the rank and percentile of this iteration's mean and the times at each percentile. A large gap to the top 10% is a reason to try a structurally different approach next rather than another refinement.
    - **Diminishing returns**: if **3** consecutive iterations fail to improve the best mean by at least 1%, strongly consider stopping unless the user asked for more exploration.
    - **Hard cap**: do not exceed the session **max iterations** unless the user raises the limit.
    - **User stop**: if the user says to stop or change direction, stop or replan.
@@ -101,13 +104,14 @@ When you exit the loop, summarize for the user:
 - **What changed** across the session (brief bullet list).
 - **Open ideas** left in the last notes, if any.
 - **Recap link** (or file path).
+- **World standing** of the best time (rank, number of players, percentile) and the #1 time.
 
 ## Relationship to other skills
 
 | Skill | Role |
 | --- | --- |
 | **leaderboard** (this file) | Prompt → plan → loop → stop; no direct API recipes. |
-| **iterate** | Single iteration: diagnostics → script → simulate → results → notes → Discord → tracker → cleanup. |
+| **iterate** | Single iteration: diagnostics → script → simulate → results → notes → tracker → cleanup. |
 | **invoke** | REST API at `localhost:8787`: preflight, helper scripts, `leaderboard_run` / `simulate`, reading results, save loading, `/delete-script`. |
 
 There is no programmatic “sub-skill call.” **Calling iterate** means reading `.claude/skills/iterate/SKILL.md` and performing that workflow end-to-end once.

@@ -111,6 +111,7 @@ Expected:
 | `/load-save` | POST | Load a save and close the title menu |
 | `/overlay` | POST | Caption strip and scoreboard drawn over the game |
 | `/camera` | GET/POST | Frame the farm, set zoom |
+| `/leaderboard` | GET | Read-only Steam leaderboard: top times, percentiles, rank of a time |
 | `/screenshot` | GET | Save the current frame |
 
 See `mod/README.md` for full parameter docs and examples.
@@ -141,9 +142,8 @@ Runs exactly one numbered iteration end-to-end:
 4. Benchmark with `run_algorithm.py` (optional 1× real-time observer preview, then high-speed)
 5. Parse `FINAL_TIME:` output → `iterations/iteration_<n>_results.json`
 6. Write `iterations/iteration_<n>_notes.md` with analysis and next steps
-7. Post Discord summary
-8. Update `iterations/iteration_tracker.json`
-9. Clean up temporary runner and diagnostic scripts from the game
+7. Update `iterations/iteration_tracker.json`
+8. Clean up temporary runner and diagnostic scripts from the game
 
 ### `/invoke` — API Reference
 

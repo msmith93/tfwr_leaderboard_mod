@@ -137,6 +137,30 @@ def camera_release():
         return {"error": str(e)}
 
 
+def leaderboard(name, time_seconds=None, top=10):
+    """
+    Read-only look at the Steam leaderboard `name` (e.g. "Carrots_Single"): entry_count, top
+    times, times at fixed percentiles, the player's own entry, and, with `time_seconds`, where
+    that time would rank. Returns a dict with "error" if it cannot be read. Never raises.
+    """
+    path = f"/leaderboard?name={name}&top={int(top)}"
+    if time_seconds:
+        path += f"&time={float(time_seconds):.3f}"
+    try:
+        return get(path)
+    except (urllib.error.URLError, OSError) as e:
+        return {"error": str(e)}
+
+
+def standing_text(rank, entry_count):
+    """One line for the scoreboard, e.g. 'world #1,204 of 38,112 (top 3.2%)'."""
+    if not rank or not entry_count:
+        return ""
+    pct = min(100.0, rank * 100.0 / entry_count)
+    shown = f"{pct:.1f}" if pct >= 0.1 else "0.1"
+    return f"world #{rank:,} of {entry_count:,} (top {shown}%)"
+
+
 def saves():
     """{"active_save": ..., "saves": [...]}"""
     return get("/saves")
@@ -212,10 +236,13 @@ def final_times(output):
     return times
 
 
-def poll_until_done(interval=5, timeout=600, verbose=True, on_poll=None):
+def poll_until_done(interval=5, timeout=600, verbose=True, on_poll=None, frame=True):
     """
     Poll every `interval` seconds until the run ends or `timeout` elapses.
     `on_poll(data)`, if given, is called with every successful poll (for live commentary).
+    With `frame` (default) the camera is fitted to the farm shortly after the run starts and
+    again when it ends, so whoever is watching can see it. The farm changes size when a
+    simulation starts or stops, which is why it is fitted twice.
 
     Returns the final poll data, with "output" holding everything printed since the run
     started (fetched incrementally). Check data["state"]: "finished", "stopped" or "error"
@@ -224,6 +251,10 @@ def poll_until_done(interval=5, timeout=600, verbose=True, on_poll=None):
     elapsed = 0
     offset = 0
     chunks = []
+    if frame:
+        time.sleep(min(1.0, interval))
+        elapsed += min(1.0, interval)
+        camera_fit()
     while elapsed < timeout:
         time.sleep(interval)
         elapsed += interval
@@ -249,5 +280,7 @@ def poll_until_done(interval=5, timeout=600, verbose=True, on_poll=None):
             except Exception as e:  # commentary must never break the benchmark
                 print(f"  on_poll failed: {e}", flush=True)
         if data.get("finished"):
+            if frame:
+                camera_fit()
             return data
     return None

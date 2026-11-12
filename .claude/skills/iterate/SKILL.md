@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: Run exactly one leaderboard iteration -- optional diagnostics, write script, simulate (repeat runs within this iteration if needed), results JSON, notes, Discord, tracker update, cleanup. Outer loop is the leaderboard skill.
+description: Run exactly one leaderboard iteration -- optional diagnostics, write script, simulate (repeat runs within this iteration if needed), results JSON, notes, tracker update, cleanup. Outer loop is the leaderboard skill.
 argument-hint: "<leaderboard name, e.g. Hay_Single or Dinosaur>"
 ---
 
@@ -10,7 +10,7 @@ Target leaderboard: $ARGUMENTS
 
 Invocation context may include **`demo_seconds`** from the **leaderboard** skill (`0` = skip observer preview, or `N` > 0 for a real-time preview of `N` wall-clock seconds before the benchmark). If you are running **iterate** standalone and the user did not specify demo behavior, use **`demo_seconds: 0`** (no mandatory ask).
 
-Perform **one** numbered iteration cycle: diagnose (if needed), write a script, simulate, capture results, analyze, report to Discord, update tracker, and clean up. **Do not** start another iteration when finished; the **leaderboard** skill (`.claude/skills/leaderboard/SKILL.md`) decides whether to run this workflow again.
+Perform **one** numbered iteration cycle: diagnose (if needed), write a script, simulate, capture results, analyze, update tracker, and clean up. **Do not** start another iteration when finished; the **leaderboard** skill (`.claude/skills/leaderboard/SKILL.md`) decides whether to run this workflow again.
 
 Within Step 2, you may run **`leaderboard_run` or `simulate` multiple times** in the same iteration (e.g. fix a bug and re-upload, or extra seeds for variance). That is still a single iteration as long as you publish **one** `iteration_<n>_*.py` and **one** primary `iteration_<n>_results.json` for this id.
 
@@ -24,8 +24,7 @@ Tasks to create:
 - `[iter N] Step 2: Run Simulations`
 - `[iter N] Step 3: Capture Results JSON`
 - `[iter N] Step 4: Analyze and Save Notes`
-- `[iter N] Step 5: Send Discord Message`
-- `[iter N] Step 6: Update Tracker and Cleanup`
+- `[iter N] Step 5: Update Tracker and Cleanup`
 
 If Step 0 diagnostics are needed (see below), also create `[iter N] Step 0: Diagnostics`.
 
@@ -161,6 +160,7 @@ On success the log ends with three blocks from the benchmark phase:
 - `=== FULL OUTPUT ===`: everything the script printed
 - `=== GAME RESULT ===`: the game's own verdict: `Completed` (goal reached), `Runs`, `Average`
 - `=== PARSED RESULTS ===`: statistics from the `FINAL_TIME` lines
+- `=== WORLD STANDING ===`: where this mean would rank on the real Steam leaderboard, and the times other players reach. Record the rank and percentile in the notes' Results table.
 
 ### Observer preview (benchmark metrics only)
 
@@ -286,23 +286,7 @@ If results are unexpectedly bad, note this explicitly. That signals the **leader
 
 → Mark `[iter N] Step 4: Analyze and Save Notes` **completed**.
 
-## Step 5: Send Discord Message
-
-Use the `mcp__discord-bot__send_discord` tool to send a 2-5 sentence summary to the channel named `"bot"`.
-
-If the Discord tool is not available in this session (the server failed to connect), do not block on it: tell the user the message could not be sent, include the text you would have sent in your reply, and mark the step completed.
-
-Format:
-> **TFWR Iteration <n>: <name>** (<leaderboard>)
-> <strategy summary in 1 sentence>. Mean time: <mean>s across <N> runs (best: <best>s, worst: <worst>s).
-> <comparison to previous best, if applicable>.
-> Next direction: <1-sentence plan for next iteration>.
-
-If this is the first iteration, skip the comparison line.
-
-→ Mark `[iter N] Step 5: Send Discord Message` **completed**.
-
-## Step 6: Update Tracker and Cleanup
+## Step 5: Update Tracker and Cleanup
 
 Update `iterations/iteration_tracker.json`:
 
@@ -345,6 +329,6 @@ curl -s -X POST http://localhost:8787/delete-script -d '{"filename": "runner"}'
 
 ### Handoff
 
-→ Mark `[iter N] Step 6: Update Tracker and Cleanup` **completed**.
+→ Mark `[iter N] Step 5: Update Tracker and Cleanup` **completed**.
 
 **Stop here.** This iteration is complete. The **leaderboard** skill decides whether to read this file again for another pass; the user may also invoke **iterate** alone for a single step. Do not loop back to Step 1 on your own.

@@ -75,6 +75,7 @@ The game must be running with the TFWRRemoteAPI mod loaded. Full docs: `mod/READ
 | `/load-save` | POST | Load a save and close the title menu |
 | `/overlay` | POST | On-screen caption strip and scoreboard panel for people watching |
 | `/camera` | GET/POST | Frame the farm (`{"fit": true}`), set zoom, or release the view |
+| `/leaderboard` | GET | Read-only Steam leaderboard: entry count, top times, percentiles, rank of a time; use `python3 scripts/leaderboard.py <Leaderboard> [time]` |
 | `/screenshot` | GET | Save the current frame; use `python3 scripts/screenshot.py out.png` |
 
 Errors use HTTP status codes (400/404/405/409/503/504) with a JSON `{"error": ...}` body; `scripts/api.py` returns these as dicts with `error` and `http_status` rather than raising.
@@ -211,7 +212,7 @@ Concrete ideas for the next iteration.
 In Cursor, the same three skills are available under `.cursor/skills/<name>/SKILL.md` (symlinked to `.claude/skills/`).
 
 - **leaderboard** -- Full flow from a user prompt to the strongest script: read `.claude/skills/leaderboard/SKILL.md`; resolves observer demo (ask if needed); loops by following **iterate** until stop criteria (max iterations, diminishing returns, user direction).
-- **iterate** -- Exactly one iteration: optional diagnostics, new script, simulate, results JSON, notes, Discord, tracker update, cleanup. Read `.claude/skills/iterate/SKILL.md` (often invoked manually as `/iterate <leaderboard>` or driven by **leaderboard**).
+- **iterate** -- Exactly one iteration: optional diagnostics, new script, simulate, results JSON, notes, tracker update, cleanup. Read `.claude/skills/iterate/SKILL.md` (often invoked manually as `/iterate <leaderboard>` or driven by **leaderboard**).
 - **invoke** -- Reference knowledge for submitting and running scripts via the REST API (loaded automatically when relevant). Read `.claude/skills/invoke/SKILL.md`.
 
 ## Key Documentation References
