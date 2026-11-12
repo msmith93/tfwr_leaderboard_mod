@@ -60,7 +60,8 @@ def main():
         print("Your recorded best: none yet on this leaderboard")
     q = data.get("time_query")
     if q:
-        print(f"A time of {fmt(q['time_seconds'])} would be {api.standing_text(q['rank'], count)}")
+        print(f"A time of {fmt(q['time_seconds'])} would be {api.standing_text(q['rank'], count)}"
+              + (f", faster than {q['beats_percent']:.0f}% of players" if "beats_percent" in q else ""))
 
 
 if __name__ == "__main__":

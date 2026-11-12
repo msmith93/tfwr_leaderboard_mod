@@ -144,12 +144,33 @@ def leaderboard(name, time_seconds=None, top=10):
     that time would rank. Returns a dict with "error" if it cannot be read. Never raises.
     """
     path = f"/leaderboard?name={name}&top={int(top)}"
-    if time_seconds:
+    if isinstance(time_seconds, (list, tuple)):
+        if time_seconds:
+            # Several times at once; results come back in "time_queries", in the same order.
+            path += "&times=" + ",".join(f"{float(t):.3f}" for t in time_seconds)
+    elif time_seconds:
         path += f"&time={float(time_seconds):.3f}"
     try:
         return get(path)
     except (urllib.error.URLError, OSError) as e:
         return {"error": str(e)}
+
+
+def ordinal(n):
+    """1 -> '1st', 2 -> '2nd', 11 -> '11th', 85 -> '85th'."""
+    n = int(n)
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n:,}{suffix}"
+
+
+def placed_text(rank, entry_count):
+    """Scoreboard wording, e.g. 'placed 85th of 330'."""
+    if not rank or not entry_count:
+        return ""
+    return f"placed {ordinal(rank)} of {entry_count:,}"
 
 
 def standing_text(rank, entry_count):

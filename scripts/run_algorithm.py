@@ -145,21 +145,36 @@ def main():
             time.sleep(1.0)
             api.camera_fit()
 
-    # Where the best time so far stands on the real leaderboard (read-only; needs Steam).
-    def world_standing(seconds):
-        info = api.leaderboard(leaderboard, seconds)
-        q = info.get("time_query")
-        if info.get("error") or not q:
-            return "", info
-        return api.standing_text(q["rank"], info.get("entry_count", 0)), info
+    # Where the iterations so far stand on the real leaderboard (read-only; needs Steam).
+    # One request places every past iteration, so the scoreboard can show each as a tick.
+    history = [t for t in board["history"] if t and t > 0]
+
+    def place(times):
+        """Ask Steam where these times rank. Returns (info, list of per-time results)."""
+        info = api.leaderboard(leaderboard, list(times)) if times else api.leaderboard(leaderboard)
+        if info.get("error"):
+            return info, []
+        return info, info.get("time_queries") or []
+
+    def show_standing(info, placed_best, placed_marks, placed_current=None):
+        """Scoreboard: 'Best: placed 85th of 330' and the percentile bar."""
+        if not show or not placed_best:
+            return
+        bar = {"best": placed_best["beats_percent"], "marks": [q["beats_percent"] for q in placed_marks]}
+        if placed_current:
+            bar["current"] = placed_current["beats_percent"]
+        api.overlay(scoreboard={
+            "standing": "Best: " + api.placed_text(placed_best["rank"], info.get("entry_count", 0)),
+            "rank_bar": bar,
+        })
 
     if show:
-        api.overlay(scoreboard=dict(board, status="checking the script", standing=""))
+        api.overlay(scoreboard=dict(board, status="checking the script", standing="", rank_bar=None))
         api.camera_fit()
         if best:
-            text, _ = world_standing(best)
-            if text:
-                api.overlay(scoreboard={"standing": "best is " + text})
+            info0, placed0 = place(history + [best])
+            if placed0:
+                show_standing(info0, placed0[-1], placed0[:-1])
 
     # Step 1: Upload algorithm script (sanity check)
     print(f"\nStep 1: Uploading {script_path} as '{game_filename}'...")
@@ -308,22 +323,33 @@ def main():
     else:
         print("\nNo FINAL_TIME lines found in output.")
 
-    # Place this run's mean on the world leaderboard.
-    if times:
-        mean_time = sum(times) / len(times)
-        text, info = world_standing(mean_time)
+    # Place this run's mean on the world leaderboard. Only a run that reached the goal has a
+    # time worth ranking: one that ended early would otherwise show up as first place.
+    goal_reached = (result or {}).get("completed") is not False
+    if times and not goal_reached:
         print("\n=== WORLD STANDING ===")
-        if text:
-            print(f"A mean of {mean_time:.3f}s would be {text}")
+        print("Not ranked: the run did not reach the goal, so its time is not a leaderboard time.")
+    elif times:
+        mean_time = sum(times) / len(times)
+        new_best = min(best, mean_time) if best else mean_time
+        info, placed = place(history + [mean_time, new_best])
+        print("\n=== WORLD STANDING ===")
+        if placed:
+            this_run, overall = placed[-2], placed[-1]
+            count = info.get("entry_count", 0)
+            print(f"A mean of {mean_time:.3f}s would be {api.standing_text(this_run['rank'], count)}")
             for p in info.get("percentiles", []):
                 print(f"  top {p['top_percent']:g}% needs {p['time_seconds']:.1f}s")
             if info.get("top"):
                 print(f"  #1 is {info['top'][0]['time_seconds']:.1f}s")
             me = info.get("player")
             if me:
-                print(f"  recorded personal best: {me['time_seconds']:.1f}s, {api.standing_text(me['rank'], info.get('entry_count', 0))}")
-            if show:
-                api.overlay(scoreboard={"standing": "this run: " + text})
+                print(f"  recorded personal best: {me['time_seconds']:.1f}s, {api.standing_text(me['rank'], count)}")
+            # The bar marks every earlier iteration, this run, and the best overall.
+            show_standing(info, overall, placed[:-2], None if mean_time <= new_best else this_run)
+            if show and mean_time <= new_best:
+                api.overlay(scoreboard={"rank_bar": {"best": overall["beats_percent"],
+                                                     "marks": [q["beats_percent"] for q in placed[:-2]]}})
         else:
             print(f"Not available: {info.get('error', 'no data')}")
 
@@ -331,7 +357,7 @@ def main():
         completed = (result or {}).get("completed")
         if completed is False:
             stage("finished: goal NOT reached")
-        elif times and best and (sum(times) / len(times)) < best:
+        elif times and best and (sum(times) / len(times)) < best and goal_reached:
             stage("finished: new best")
         else:
             stage("finished")

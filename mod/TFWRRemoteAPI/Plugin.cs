@@ -843,6 +843,25 @@ namespace TFWRRemoteAPI
                         if (board.ContainsKey("subtitle")) Overlay.Subtitle = MiniJson.GetString(board, "subtitle");
                         if (board.ContainsKey("status")) Overlay.Status = MiniJson.GetString(board, "status");
                         if (board.ContainsKey("standing")) Overlay.Standing = MiniJson.GetString(board, "standing");
+                        // "rank_bar": {"best": 74.5, "current": 60.1, "marks": [..]} in percent of
+                        // players beaten (0-100); null removes the bar.
+                        object barValue;
+                        if (board.TryGetValue("rank_bar", out barValue))
+                        {
+                            Overlay.BarMarks.Clear();
+                            Overlay.BarBest = null;
+                            Overlay.BarCurrent = null;
+                            var bar = barValue as Dictionary<string, object>;
+                            if (bar != null)
+                            {
+                                if (bar.ContainsKey("best") && bar["best"] is double) Overlay.BarBest = (double)bar["best"];
+                                if (bar.ContainsKey("current") && bar["current"] is double) Overlay.BarCurrent = (double)bar["current"];
+                                var marks = bar.ContainsKey("marks") ? bar["marks"] as List<object> : null;
+                                if (marks != null)
+                                    foreach (var m in marks)
+                                        if (m is double) Overlay.BarMarks.Add((double)m);
+                            }
+                        }
                         if (board.ContainsKey("best_label")) Overlay.BestLabel = MiniJson.GetString(board, "best_label");
                         if (board.ContainsKey("best_seconds"))
                         {
@@ -952,11 +971,25 @@ namespace TFWRRemoteAPI
             int top = 10;
             if (!string.IsNullOrEmpty(request.QueryString["top"]) && !int.TryParse(request.QueryString["top"], out top))
                 return ApiResponse.Error(400, "'top' must be an integer");
-            double timeSeconds = 0;
-            string rawTime = request.QueryString["time"];
-            if (!string.IsNullOrEmpty(rawTime) && (!double.TryParse(rawTime, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out timeSeconds) || timeSeconds <= 0))
-                return ApiResponse.Error(400, "'time' must be a positive number of seconds");
+            // "time" places one time; "times" places several (comma-separated seconds).
+            var timesSeconds = new List<double>();
+            string rawTimes = request.QueryString["times"];
+            if (string.IsNullOrEmpty(rawTimes)) rawTimes = request.QueryString["time"];
+            if (!string.IsNullOrEmpty(rawTimes))
+            {
+                foreach (string part in rawTimes.Split(','))
+                {
+                    double t;
+                    if (!double.TryParse(part.Trim(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out t) || t <= 0)
+                        return ApiResponse.Error(400, "'time'/'times' must be positive numbers of seconds");
+                    timesSeconds.Add(t);
+                }
+                if (timesSeconds.Count > 200)
+                    return ApiResponse.Error(400, "At most 200 times per request");
+            }
+            var timesMs = new List<int>();
+            foreach (double t in timesSeconds) timesMs.Add((int)Math.Round(t * 1000));
 
             SteamBoardQuery query = null;
             string leaderboardName = null;
@@ -966,7 +999,7 @@ namespace TFWRRemoteAPI
                 if (string.IsNullOrEmpty(lb.steamLeaderboardName))
                     return ApiResponse.Error(404, $"Leaderboard '{lb.leaderboardName}' has no Steam leaderboard");
                 leaderboardName = lb.leaderboardName;
-                query = new SteamBoardQuery(lb.steamLeaderboardName, top, (int)Math.Round(timeSeconds * 1000));
+                query = new SteamBoardQuery(lb.steamLeaderboardName, top, timesMs);
                 query.Start();
                 return ApiResponse.Ok("{}");
             });
@@ -998,10 +1031,19 @@ namespace TFWRRemoteAPI
                 ? new MiniJson.ObjectWriter().Num("rank", query.PlayerRank).Num("time_seconds", query.PlayerMs / 1000.0)
                     .Num("top_percent", percentOf(query.PlayerRank)).ToString()
                 : "null");
-            writer.Raw("time_query", query.HasTimeRank
-                ? new MiniJson.ObjectWriter().Num("time_seconds", timeSeconds).Num("rank", query.TimeRank)
-                    .Num("top_percent", percentOf(Math.Min(query.TimeRank, Math.Max(1, query.EntryCount)))).ToString()
-                : "null");
+            // "beats_percent": share of players with a slower time (0 = last, 100 = faster than everyone).
+            var queries = new List<string>();
+            for (int i = 0; i < query.TimeRanks.Count && i < timesSeconds.Count; i++)
+            {
+                int rank = query.TimeRanks[i];
+                double beats = query.EntryCount > 0
+                    ? Math.Round(Math.Max(0, query.EntryCount - (rank - 1)) * 100.0 / query.EntryCount, 2) : 0;
+                queries.Add(new MiniJson.ObjectWriter().Num("time_seconds", timesSeconds[i]).Num("rank", rank)
+                    .Num("top_percent", percentOf(Math.Min(rank, Math.Max(1, query.EntryCount))))
+                    .Num("beats_percent", Math.Min(100, beats)).ToString());
+            }
+            writer.Raw("time_query", queries.Count > 0 ? queries[0] : "null");
+            writer.Raw("time_queries", "[" + string.Join(",", queries) + "]");
             return ApiResponse.Ok(writer.ToString());
         }
 

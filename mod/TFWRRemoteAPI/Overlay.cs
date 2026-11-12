@@ -21,7 +21,11 @@ namespace TFWRRemoteAPI
         public static string Title;
         public static string Subtitle;
         public static string Status;
-        public static string Standing;         // e.g. "world #1,204 of 38,112 (top 3.2%)"
+        public static string Standing;         // e.g. "Best: placed 85th of 330"
+        // Percentile bar under the standing line: share of players beaten, 0-100.
+        public static double? BarBest;         // the best time so far
+        public static double? BarCurrent;      // the run just finished, if different
+        public static readonly List<double> BarMarks = new List<double>();   // every iteration
         public static double? BestSeconds;
         public static string BestLabel;
         public static readonly List<double> History = new List<double>();
@@ -36,6 +40,9 @@ namespace TFWRRemoteAPI
             Subtitle = null;
             Status = null;
             Standing = null;
+            BarBest = null;
+            BarCurrent = null;
+            BarMarks.Clear();
             BestSeconds = null;
             BestLabel = null;
             History.Clear();
@@ -134,12 +141,15 @@ namespace TFWRRemoteAPI
             catch { }
 
             // After the run ends the game resets its counters; fall back to the recorded result.
+            // A run that ended without reaching the goal has no comparable time.
+            bool goalMissed = false;
             lock (RunState.Lock)
             {
                 if (!average.HasValue && RunState.HasLeaderboardResult && RunState.LeaderboardRuns > 0)
                 {
                     average = RunState.LeaderboardAverageSeconds;
                     runs = RunState.LeaderboardRuns;
+                    goalMissed = !RunState.LeaderboardCompleted;
                 }
             }
 
@@ -151,6 +161,7 @@ namespace TFWRRemoteAPI
                 + (BestSeconds.HasValue ? line : 0)
                 + (hasHistory ? 90 * u : 0)
                 + (string.IsNullOrEmpty(Standing) ? 0 : line)
+                + (BarBest.HasValue ? 74 * u : 0)
                 + (string.IsNullOrEmpty(Status) ? 0 : line);
 
             Fill(new Rect(x, y, width, height), new Color(0.05f, 0.07f, 0.1f, 0.85f));
@@ -169,7 +180,11 @@ namespace TFWRRemoteAPI
             double? headline = average ?? clock;
             string headlineText = headline.HasValue ? FormatTime(headline.Value) : "-";
             string delta = "";
-            if (average.HasValue && BestSeconds.HasValue && BestSeconds.Value > 0)
+            if (goalMissed)
+            {
+                delta = $"  <size={Mathf.RoundToInt(22 * u)}><color=#ff8389>goal missed</color></size>";
+            }
+            else if (average.HasValue && BestSeconds.HasValue && BestSeconds.Value > 0)
             {
                 double d = average.Value - BestSeconds.Value;
                 string color = d <= 0 ? "#6fdc8c" : "#ff8389";
@@ -204,8 +219,39 @@ namespace TFWRRemoteAPI
                 cy += line;
             }
 
+            if (BarBest.HasValue)
+            {
+                DrawRankBar(new Rect(cx, cy + 14 * u, cw, 14 * u), u);
+                cy += 74 * u;
+            }
+
             if (!string.IsNullOrEmpty(Status))
                 GUI.Label(new Rect(cx, cy, cw, line), Status, _rowStyle);
+        }
+
+        // Where the best time sits among all players: slowest at the left, fastest at the right.
+        // Thin ticks are the individual iterations; the tall marker is the best.
+        private static void DrawRankBar(Rect track, float u)
+        {
+            Func<double, float> xOf = pct => track.x + track.width * Mathf.Clamp01((float)pct / 100f);
+            float best = xOf(BarBest.Value);
+
+            Fill(track, new Color(1f, 1f, 1f, 0.14f));
+            Fill(new Rect(track.x, track.y, best - track.x, track.height), new Color(0.44f, 0.86f, 0.55f, 0.55f));
+
+            foreach (double mark in BarMarks)
+                Fill(new Rect(xOf(mark) - 1 * u, track.y - 4 * u, 2 * u, track.height + 8 * u), new Color(0.82f, 0.86f, 0.93f, 0.85f));
+
+            if (BarCurrent.HasValue)
+                Fill(new Rect(xOf(BarCurrent.Value) - 1.5f * u, track.y - 7 * u, 3 * u, track.height + 14 * u), new Color(1f, 0.78f, 0.3f, 1f));
+
+            Fill(new Rect(best - 2.5f * u, track.y - 9 * u, 5 * u, track.height + 18 * u), new Color(0.44f, 0.86f, 0.55f, 1f));
+
+            float labelY = track.yMax + 10 * u;
+            GUI.Label(new Rect(track.x, labelY, track.width, 28 * u),
+                "faster than " + BarBest.Value.ToString("0", CultureInfo.InvariantCulture) + "% of players", _smallStyle);
+            var right = new GUIStyle(_smallStyle) { alignment = TextAnchor.UpperRight };
+            GUI.Label(new Rect(track.x, labelY, track.width, 28 * u), "#1", right);
         }
 
         // One bar per past iteration, scaled to the slowest; the fastest is highlighted.

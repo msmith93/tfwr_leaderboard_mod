@@ -24,12 +24,16 @@ namespace TFWRRemoteAPI
             = new List<KeyValuePair<double, KeyValuePair<int, int>>>();                               // percent -> (rank, ms)
         public bool HasPlayer;
         public int PlayerRank, PlayerMs;
-        public bool HasTimeRank;
-        public int TimeRank;
+        /// <summary>Rank each queried time would get, in the order the times were given.</summary>
+        public readonly List<int> TimeRanks = new List<int>();
 
         private readonly string _steamName;
         private readonly int _topCount;
-        private readonly int _queryMs;   // 0 = no time to place
+        private readonly List<int> _queryMs;   // times to place, in milliseconds
+        private int _queryIndex;
+        // Up to this many entries the whole board is fetched in one call and times are placed
+        // locally; above it each time is placed by binary search over single-entry downloads.
+        private const int FullDownloadLimit = 5000;
         private SteamLeaderboard_t _board;
 
         // Kept alive for the life of the query: Steam drops the callback if these are collected.
@@ -40,11 +44,11 @@ namespace TFWRRemoteAPI
         private int _percentIndex;
         private int _lo, _hi;            // binary search bounds (ranks) for the time query
 
-        public SteamBoardQuery(string steamName, int topCount, int queryMs)
+        public SteamBoardQuery(string steamName, int topCount, List<int> queryMs)
         {
             _steamName = steamName;
             _topCount = Math.Max(1, Math.Min(100, topCount));
-            _queryMs = queryMs;
+            _queryMs = queryMs ?? new List<int>();
         }
 
         /// <summary>Call on the main thread.</summary>
@@ -137,30 +141,62 @@ namespace TFWRRemoteAPI
             });
         }
 
-        // Where a given time would rank: binary search for the first rank whose time is not
-        // better than it. About log2(entries) single-entry downloads.
+        // Where each given time would rank: the number of faster entries, plus one.
         private void StartTimeSearch()
         {
-            if (_queryMs <= 0) { Done.Set(); return; }
+            if (_queryMs.Count == 0) { Done.Set(); return; }
+
+            if (EntryCount <= FullDownloadLimit)
+            {
+                Download(ELeaderboardDataRequest.k_ELeaderboardDataRequestGlobal, 1, EntryCount, entries =>
+                {
+                    var scores = new List<int>(entries.Count);
+                    foreach (var e in entries) scores.Add(e.Value);
+                    scores.Sort();
+                    foreach (int ms in _queryMs)
+                    {
+                        int lo = 0, hi = scores.Count;           // first index whose score is >= ms
+                        while (lo < hi)
+                        {
+                            int mid = lo + (hi - lo) / 2;
+                            if (scores[mid] < ms) lo = mid + 1; else hi = mid;
+                        }
+                        TimeRanks.Add(lo + 1);
+                    }
+                    Done.Set();
+                });
+                return;
+            }
+
+            _queryIndex = 0;
+            BeginSearch();
+        }
+
+        private void BeginSearch()
+        {
+            if (_queryIndex >= _queryMs.Count) { Done.Set(); return; }
             _lo = 1;
             _hi = EntryCount + 1;
             SearchStep();
         }
 
+        // Binary search for the first rank whose time is not better than the queried one:
+        // about log2(entries) single-entry downloads per time.
         private void SearchStep()
         {
             if (_lo >= _hi)
             {
-                HasTimeRank = true;
-                TimeRank = _lo;
-                Done.Set();
+                TimeRanks.Add(_lo);
+                _queryIndex++;
+                BeginSearch();
                 return;
             }
+            int target = _queryMs[_queryIndex];
             int mid = _lo + (_hi - _lo) / 2;
             Download(ELeaderboardDataRequest.k_ELeaderboardDataRequestGlobal, mid, mid, entries =>
             {
-                if (entries.Count == 0) { _hi = mid; }                    // past the end
-                else if (entries[0].Value < _queryMs) { _lo = mid + 1; }  // that entry is faster
+                if (entries.Count == 0) { _hi = mid; }                   // past the end
+                else if (entries[0].Value < target) { _lo = mid + 1; }   // that entry is faster
                 else { _hi = mid; }
                 SearchStep();
             });
